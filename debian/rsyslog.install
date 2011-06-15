@@ -19,4 +19,3 @@ debian/tmp/usr/lib/rsyslog/lmzlibw.so
 debian/tmp/usr/lib/rsyslog/ommail.so
 debian/tmp/usr/lib/rsyslog/omprog.so
 debian/tmp/usr/lib/rsyslog/omruleset.so
-debian/tmp/usr/lib/rsyslog/pm*.so
