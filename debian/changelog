@@ -1,4 +1,4 @@
-rsyslog (5.7.10-1) unstable; urgency=low
+rsyslog (5.8.1-2) unstable; urgency=low
 
   * Reduce set of config options
 
