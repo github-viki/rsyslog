@@ -1,6 +1,4 @@
-CREATE DATABASE Syslog;
-USE Syslog;
-CREATE TABLE SystemEvents
+CREATE TABLE IF NOT EXISTS SystemEvents
 (
         ID int unsigned not null auto_increment primary key,
         CustomerID bigint,
@@ -28,7 +26,7 @@ CREATE TABLE SystemEvents
         SystemID int NULL
 );
 
-CREATE TABLE SystemEventsProperties
+CREATE TABLE IF NOT EXISTS SystemEventsProperties
 (
         ID int unsigned not null auto_increment primary key,
         SystemEventID int NULL ,

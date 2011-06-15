@@ -1,5 +1,3 @@
-CREATE DATABASE 'Syslog' WITH ENCODING 'SQL_ASCII';
-\c Syslog;
 CREATE TABLE SystemEvents
 (
         ID serial not null primary key,

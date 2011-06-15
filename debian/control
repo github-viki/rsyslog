@@ -2,7 +2,7 @@ Source: rsyslog
 Section: admin
 Priority: important
 Maintainer: Michael Biebl <biebl@debian.org>
-Build-Depends: debhelper (>= 8), autotools-dev (>= 20100122.1), zlib1g-dev, libmysqlclient-dev, libpq-dev, libkrb5-dev, libgnutls-dev, librelp-dev, pkg-config
+Build-Depends: debhelper (>= 8), autotools-dev (>= 20100122.1), zlib1g-dev, libgnutls-dev, librelp-dev, pkg-config
 Standards-Version: 3.9.2
 Vcs-Git: git://git.debian.org/git/collab-maint/rsyslog.git
 Vcs-Browser: http://git.debian.org/?p=collab-maint/rsyslog.git;a=summary
@@ -15,7 +15,7 @@ Conflicts: system-log-daemon, linux-kernel-log-daemon
 Provides: system-log-daemon, linux-kernel-log-daemon
 Depends: ${shlibs:Depends}, ${misc:Depends}, lsb-base (>= 3.2-14)
 Recommends: logrotate
-Suggests: rsyslog-mysql | rsyslog-pgsql, rsyslog-doc, rsyslog-gnutls, rsyslog-gssapi, rsyslog-relp
+Suggests: rsyslog-doc, rsyslog-gnutls, rsyslog-relp
 Description: reliable system and kernel logging daemon
  Rsyslog is a multi-threaded implementation of syslogd (a system utility
  providing support for message logging), with features that include:
@@ -46,35 +46,6 @@ Description: documentation for rsyslog
  It describes the general configuration file syntax for filters, actions,
  templates, etc, and has detailed information for all available configuration
  directives.
-
-Package: rsyslog-mysql
-Architecture: any
-Priority: extra
-Depends: ${shlibs:Depends}, ${misc:Depends}, rsyslog (= ${binary:Version}), dbconfig-common, ucf
-Recommends: mysql-client
-Suggests: mysql-server
-Description: MySQL output plugin for rsyslog
- This plugin allows rsyslog to write the syslog messages into a MySQL database.
-
-Package: rsyslog-pgsql
-Architecture: any
-Priority: extra
-Depends: ${shlibs:Depends}, ${misc:Depends}, rsyslog (= ${binary:Version}), dbconfig-common, ucf
-Recommends: postgresql-client
-Suggests: postgresql
-Description: PostgreSQL output plugin for rsyslog
- This plugin allows rsyslog to write the syslog messages into a PostgreSQL
- database.
-
-Package: rsyslog-gssapi
-Architecture: any
-Priority: extra
-Depends: ${shlibs:Depends}, ${misc:Depends}, rsyslog (= ${binary:Version})
-Suggests: krb5-user
-Description: GSSAPI authentication and encryption support for rsyslog
- These plugins allow rsyslog to write and/or receive GSSAPI authenticated and
- encrypted syslog messages. GSSAPI is commonly used for Kerberos
- authentication.
 
 Package: rsyslog-gnutls
 Architecture: any
