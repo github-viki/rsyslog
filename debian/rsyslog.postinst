@@ -1,0 +1,41 @@
+#!/bin/sh
+
+set -e
+
+# summary of how this script can be called:
+#        * <postinst> `configure' <most-recently-configured-version>
+#        * <old-postinst> `abort-upgrade' <new version>
+#        * <conflictor's-postinst> `abort-remove' `in-favour' <package>
+#          <new-version>
+#        * <postinst> `abort-remove'
+#        * <deconfigured's-postinst> `abort-deconfigure' `in-favour'
+#          <failed-install-package> <version> `removing'
+#          <conflicting-package> <version>
+# for details, see http://www.debian.org/doc/debian-policy/ or
+# the debian-policy package
+
+case "$1" in
+    configure)
+	# Update init script priorities
+	if dpkg --compare-versions "$2" lt "3.20.2-1"; then
+		for i in 0 6 ; do
+			if [ -e /etc/rc$i.d/K90rsyslog ]; then
+				mv /etc/rc$i.d/K90rsyslog /etc/rc$i.d/S30rsyslog
+			fi
+		done
+	fi
+    ;;
+
+    abort-upgrade|abort-remove|abort-deconfigure)
+    ;;
+
+    *)
+	echo "postinst called with unknown argument \`$1'" >&2
+	exit 1
+    ;;
+esac
+
+
+#DEBHELPER#
+
+exit 0
