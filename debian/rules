@@ -5,9 +5,8 @@
 
 override_dh_auto_configure:
 	dh_auto_configure -- \
-		--enable-mail \
-		--enable-imfile \
-		--enable-impstats \
+		--enable-debug \
+		--enable-imptcp \
 		--enable-gnutls \
 		--enable-relp \
 		--enable-omprog \
