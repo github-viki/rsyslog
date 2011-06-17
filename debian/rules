@@ -6,12 +6,12 @@
 override_dh_auto_configure:
 	dh_auto_configure -- \
 		--enable-debug \
-		--enable-imptcp \
-		--enable-gnutls \
-		--enable-relp \
-		--enable-omprog \
 		--disable-testbench \
-		--enable-imfile
+#		--enable-imptcp \
+#		--enable-gnutls \
+#		--enable-relp \
+#		--enable-omprog \
+#		--enable-imfile \
 
 override_dh_auto_install:
 	dh_auto_install
