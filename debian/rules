@@ -1,17 +1,23 @@
 #!/usr/bin/make -f
-
+unexport LDFLAGS
 %:
 	dh $@ --with autotools_dev
 
 override_dh_auto_configure:
-	dh_auto_configure -- \
+	CLFAGS=-g dh_auto_configure -- \
 		--enable-debug \
 		--disable-testbench \
-#		--enable-imptcp \
-#		--enable-gnutls \
-#		--enable-relp \
-#		--enable-omprog \
-#		--enable-imfile \
+		--enable-gnutls \
+		--enable-imptcp \
+		--enable-relp \
+		--enable-omprog \
+		--enable-imfile \
+		--enable-omtemplate \
+		--enable-imtemplate \
+		--enable-omuxsock \
+		--enable-omruleset \
+		--enable-impstats \
+		--enable-imfile
 
 override_dh_auto_install:
 	dh_auto_install
