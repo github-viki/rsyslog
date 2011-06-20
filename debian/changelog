@@ -1,3 +1,9 @@
+rsyslog (5.8.1-6) unstable; urgency=low
+
+  * Switch to an upstart job
+
+ -- Jason Cook <jason@fastly.com>  Mon, 20 Jun 2011 12:25:35 -0700
+
 rsyslog (5.8.1-5) unstable; urgency=low
 
   * That was a giant waste of time, fuck you pbuilder
