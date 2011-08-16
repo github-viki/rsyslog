@@ -1,3 +1,9 @@
+rsyslog (5.8.1-7) unstable; urgency=low
+
+  * Make sure impstats is included
+
+ -- Jason Cook <jason@fastly.com>  Mon, 15 Aug 2011 18:16:28 -0700
+
 rsyslog (5.8.1-6) unstable; urgency=low
 
   * Switch to an upstart job
