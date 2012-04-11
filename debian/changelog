@@ -1,3 +1,9 @@
+rsyslog (5.8.1-8) unstable; urgency=low
+
+  * Include imfile in the .install file
+
+ -- Jason Cook <jason@fastly.com>  Wed, 11 Apr 2012 23:02:01 +0000
+
 rsyslog (5.8.1-7) unstable; urgency=low
 
   * Make sure impstats is included
