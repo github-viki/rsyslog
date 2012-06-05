@@ -11,6 +11,7 @@ debian/tmp/usr/lib/rsyslog/lmzlibw.so
 debian/tmp/usr/lib/rsyslog/imuxsock.so
 debian/tmp/usr/lib/rsyslog/omruleset.so
 debian/tmp/usr/lib/rsyslog/omtesting.so
+debian/tmp/usr/lib/rsyslog/omprog.so
 debian/tmp/usr/lib/rsyslog/lmnet.so
 debian/tmp/usr/lib/rsyslog/lmstrmsrv.so
 debian/tmp/usr/lib/rsyslog/lmnsd_ptcp.so
