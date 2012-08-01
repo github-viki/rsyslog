@@ -2,7 +2,7 @@ Source: rsyslog
 Section: admin
 Priority: important
 Maintainer: Michael Biebl <biebl@debian.org>
-Build-Depends: debhelper (>= 8), autotools-dev (>= 20100122.1), zlib1g-dev, libgnutls-dev, librelp-dev, pkg-config, libestr-dev
+Build-Depends: debhelper (>= 8), autotools-dev (>= 20100122.1), zlib1g-dev, libgnutls-dev, librelp-dev, pkg-config, libestr-dev, libee-dev
 Standards-Version: 3.9.2
 Vcs-Git: git://git.debian.org/git/collab-maint/rsyslog.git
 Vcs-Browser: http://git.debian.org/?p=collab-maint/rsyslog.git;a=summary
