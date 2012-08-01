@@ -6,26 +6,26 @@
  * NOTE: read comments in module-template.h to understand how this file
  *       works!
  *
- * File begun on 2008-03-01 by RGerhards (extracted from tcpsrv.c)
+ * File begun on 2008-03-01 by RGerhards (extracted from tcpsrv.c, which
+ * based on the BSD-licensed syslogd.c)
  *
- * Copyright 2007, 2008 Rainer Gerhards and Adiscon GmbH.
+ * Copyright 2007-2012 Adiscon GmbH.
  *
  * This file is part of rsyslog.
  *
- * Rsyslog is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * Rsyslog is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with Rsyslog.  If not, see <http://www.gnu.org/licenses/>.
- *
- * A copy of the GPL can be found in the file "COPYING" in this distribution.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ * 
+ *       http://www.apache.org/licenses/LICENSE-2.0
+ *       -or-
+ *       see COPYING.ASL20 in the source distribution
+ * 
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 #include "config.h"
 #include <stdlib.h>
@@ -95,6 +95,7 @@ finalize_it:
 /* destructor for the tcps_sess object */
 BEGINobjDestruct(tcps_sess) /* be sure to specify the object type also in END and CODESTART macros! */
 CODESTARTobjDestruct(tcps_sess)
+//printf("sess %p destruct, pStrm %p\n", pThis, pThis->pStrm);
 	if(pThis->pStrm != NULL)
 		netstrm.Destruct(&pThis->pStrm);
 
@@ -253,7 +254,8 @@ defaultDoSubmitMessage(tcps_sess_t *pThis, struct syslogTime *stTime, time_t ttG
 	CHKiRet(msgConstructWithTime(&pMsg, stTime, ttGenTime));
 	MsgSetRawMsg(pMsg, (char*)pThis->pMsg, pThis->iMsg);
 	MsgSetInputName(pMsg, pThis->pLstnInfo->pInputName);
-	MsgSetFlowControlType(pMsg, eFLOWCTL_LIGHT_DELAY);
+	MsgSetFlowControlType(pMsg, pThis->pSrv->bUseFlowControl
+			            ? eFLOWCTL_LIGHT_DELAY : eFLOWCTL_NO_DELAY);
 	pMsg->msgFlags  = NEEDS_PARSING | PARSE_HOSTNAME;
 	MsgSetRcvFrom(pMsg, pThis->fromHost);
 	CHKiRet(MsgSetRcvFromIP(pMsg, pThis->fromHostIP));
@@ -337,6 +339,7 @@ Close(tcps_sess_t *pThis)
 {
 	DEFiRet;
 
+//printf("sess %p close\n", pThis);
 	ISOBJ_TYPE_assert(pThis, tcps_sess);
 	netstrm.Destruct(&pThis->pStrm);
 	if(pThis->fromHost != NULL) {
@@ -466,6 +469,7 @@ DataRcvd(tcps_sess_t *pThis, char *pData, size_t iLen)
 	char *pEnd;
 	DEFiRet;
 
+//printf("DataRcvd: %p\n", pThis);
 	ISOBJ_TYPE_assert(pThis, tcps_sess);
 	assert(pData != NULL);
 	assert(iLen > 0);

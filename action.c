@@ -39,7 +39,35 @@
  * - processAction
  * - submitBatch
  * - tryDoAction
- * - 
+ * - ...
+ *
+ * MORE ON PROCESSING, QUEUES and FILTERING
+ * All filtering needs to be done BEFORE messages are enqueued to an
+ * action. In previous code, part of the filtering was done at the
+ * "remote end" of the action queue, which lead to problems in
+ * non-direct mode (because then things run asynchronously). In order
+ * to solve this problem once and for all, I have changed the code so
+ * that all filtering is done before enq, and processing on the
+ * dequeue side of action processing now always executes whatever is
+ * enqueued. This is the only way to handle things consistently and
+ * (as much as possible) in a queue-type agnostic way. However, it is
+ * a rather radical change, which I unfortunately needed to make from
+ * stable version 5.8.1 to 5.8.2. If new problems pop up, you now know
+ * what may be their cause. In any case, the way it is done now is the
+ * only correct one.
+ * A problem is that, under fortunate conditions, we use the current
+ * batch for the output system as well. This is very good from a performance
+ * point of view, but makes the distinction between enq and deq side of
+ * the queue a bit hard. The current idea is that the filter condition
+ * alone is checked at the deq side of the queue (seems to be unavoidable
+ * to do it that way), but all other complex conditons (like failover
+ * handling) go into the computation of the filter condition. For
+ * non-direct queues, we still enqueue only what is acutally necessary.
+ * Note that in this case the rest of the code must ensure that the filter
+ * is set to "true". While this is not perfect and not as simple as
+ * we would like to see it, it looks like the best way to tackle that
+ * beast.
+ * rgerhards, 2011-06-15
  *
  * Copyright 2007-2011 Rainer Gerhards and Adiscon GmbH.
  *
@@ -100,38 +128,44 @@ DEFobjCurrIf(datetime)
 DEFobjCurrIf(module)
 DEFobjCurrIf(errmsg)
 
-static int iActExecOnceInterval = 0; /* execute action once every nn seconds */
-static int iActExecEveryNthOccur = 0; /* execute action every n-th occurence (0,1=always) */
-static time_t iActExecEveryNthOccurTO = 0; /* timeout for n-occurence setting (in seconds, 0=never) */
-static int glbliActionResumeInterval = 30;
-int glbliActionResumeRetryCount = 0;		/* how often should suspended actions be retried? */
-static int bActionRepMsgHasMsg = 0;		/* last messsage repeated... has msg fragment in it */
 
-static int bActionWriteAllMarkMsgs = FALSE;			/* should all mark messages be unconditionally written? */
-static uchar *pszActionName;					/* short name for the action */
-/* action queue and its configuration parameters */
-static queueType_t ActionQueType = QUEUETYPE_DIRECT;		/* type of the main message queue above */
-static int iActionQueueSize = 1000;				/* size of the main message queue above */
-static int iActionQueueDeqBatchSize = 16;			/* batch size for action queues */
-static int iActionQHighWtrMark = 800;				/* high water mark for disk-assisted queues */
-static int iActionQLowWtrMark = 200;				/* low water mark for disk-assisted queues */
-static int iActionQDiscardMark = 9800;				/* begin to discard messages */
-static int iActionQDiscardSeverity = 8;				/* by default, discard nothing to prevent unintentional loss */
-static int iActionQueueNumWorkers = 1;				/* number of worker threads for the mm queue above */
-static uchar *pszActionQFName = NULL;				/* prefix for the main message queue file */
-static int64 iActionQueMaxFileSize = 1024*1024;
-static int iActionQPersistUpdCnt = 0;				/* persist queue info every n updates */
-static int bActionQSyncQeueFiles = 0;				/* sync queue files */
-static int iActionQtoQShutdown = 0;				/* queue shutdown */ 
-static int iActionQtoActShutdown = 1000;			/* action shutdown (in phase 2) */ 
-static int iActionQtoEnq = 2000;				/* timeout for queue enque */ 
-static int iActionQtoWrkShutdown = 60000;			/* timeout for worker thread shutdown */
-static int iActionQWrkMinMsgs = 100;				/* minimum messages per worker needed to start a new one */
-static int bActionQSaveOnShutdown = 1;				/* save queue on shutdown (when DA enabled)? */
-static int64 iActionQueMaxDiskSpace = 0;			/* max disk space allocated 0 ==> unlimited */
-static int iActionQueueDeqSlowdown = 0;				/* dequeue slowdown (simple rate limiting) */
-static int iActionQueueDeqtWinFromHr = 0;			/* hour begin of time frame when queue is to be dequeued */
-static int iActionQueueDeqtWinToHr = 25;			/* hour begin of time frame when queue is to be dequeued */
+typedef struct configSettings_s {
+	int bActExecWhenPrevSusp;			/* execute action only when previous one was suspended? */
+	int bActionWriteAllMarkMsgs;			/* should all mark messages be unconditionally written? */
+	int iActExecOnceInterval;			/* execute action once every nn seconds */
+	int iActExecEveryNthOccur;			/* execute action every n-th occurence (0,1=always) */
+	time_t iActExecEveryNthOccurTO;			/* timeout for n-occurence setting (in seconds, 0=never) */
+	int glbliActionResumeInterval;
+	int glbliActionResumeRetryCount;		/* how often should suspended actions be retried? */
+	int bActionRepMsgHasMsg;			/* last messsage repeated... has msg fragment in it */
+	uchar *pszActionName;				/* short name for the action */
+	/* action queue and its configuration parameters */
+	queueType_t ActionQueType;			/* type of the main message queue above */
+	int iActionQueueSize;				/* size of the main message queue above */
+	int iActionQueueDeqBatchSize;			/* batch size for action queues */
+	int iActionQHighWtrMark;			/* high water mark for disk-assisted queues */
+	int iActionQLowWtrMark;				/* low water mark for disk-assisted queues */
+	int iActionQDiscardMark;			/* begin to discard messages */
+	int iActionQDiscardSeverity;			/* by default, discard nothing to prevent unintentional loss */
+	int iActionQueueNumWorkers;			/* number of worker threads for the mm queue above */
+	uchar *pszActionQFName;				/* prefix for the main message queue file */
+	int64 iActionQueMaxFileSize;
+	int iActionQPersistUpdCnt;			/* persist queue info every n updates */
+	int bActionQSyncQeueFiles;			/* sync queue files */
+	int iActionQtoQShutdown;			/* queue shutdown */ 
+	int iActionQtoActShutdown;			/* action shutdown (in phase 2) */ 
+	int iActionQtoEnq;				/* timeout for queue enque */ 
+	int iActionQtoWrkShutdown;			/* timeout for worker thread shutdown */
+	int iActionQWrkMinMsgs;				/* minimum messages per worker needed to start a new one */
+	int bActionQSaveOnShutdown;			/* save queue on shutdown (when DA enabled)? */
+	int64 iActionQueMaxDiskSpace;			/* max disk space allocated 0 ==> unlimited */
+	int iActionQueueDeqSlowdown;			/* dequeue slowdown (simple rate limiting) */
+	int iActionQueueDeqtWinFromHr;			/* hour begin of time frame when queue is to be dequeued */
+	int iActionQueueDeqtWinToHr;			/* hour begin of time frame when queue is to be dequeued */
+} configSettings_t;
+
+configSettings_t cs;					/* our current config settings */
+configSettings_t cs_save;				/* our saved (scope!) config settings */
 
 /* the counter below counts actions created. It is used to obtain unique IDs for the action. They
  * should not be relied on for any long-term activity (e.g. disk queue names!), but they are nice
@@ -192,32 +226,32 @@ actionResetQueueParams(void)
 {
 	DEFiRet;
 
-	ActionQueType = QUEUETYPE_DIRECT;		/* type of the main message queue above */
-	iActionQueueSize = 1000;			/* size of the main message queue above */
-	iActionQueueDeqBatchSize = 16;			/* default batch size */
-	iActionQHighWtrMark = 800;			/* high water mark for disk-assisted queues */
-	iActionQLowWtrMark = 200;			/* low water mark for disk-assisted queues */
-	iActionQDiscardMark = 9800;			/* begin to discard messages */
-	iActionQDiscardSeverity = 8;			/* discard warning and above */
-	iActionQueueNumWorkers = 1;			/* number of worker threads for the mm queue above */
-	iActionQueMaxFileSize = 1024*1024;
-	iActionQPersistUpdCnt = 0;			/* persist queue info every n updates */
-	bActionQSyncQeueFiles = 0;
-	iActionQtoQShutdown = 0;			/* queue shutdown */ 
-	iActionQtoActShutdown = 1000;			/* action shutdown (in phase 2) */ 
-	iActionQtoEnq = 2000;				/* timeout for queue enque */ 
-	iActionQtoWrkShutdown = 60000;			/* timeout for worker thread shutdown */
-	iActionQWrkMinMsgs = 100;			/* minimum messages per worker needed to start a new one */
-	bActionQSaveOnShutdown = 1;			/* save queue on shutdown (when DA enabled)? */
-	iActionQueMaxDiskSpace = 0;
-	iActionQueueDeqSlowdown = 0;
-	iActionQueueDeqtWinFromHr = 0;
-	iActionQueueDeqtWinToHr = 25;			/* 25 disables time windowed dequeuing */
+	cs.ActionQueType = QUEUETYPE_DIRECT;		/* type of the main message queue above */
+	cs.iActionQueueSize = 1000;			/* size of the main message queue above */
+	cs.iActionQueueDeqBatchSize = 16;		/* default batch size */
+	cs.iActionQHighWtrMark = 800;			/* high water mark for disk-assisted queues */
+	cs.iActionQLowWtrMark = 200;			/* low water mark for disk-assisted queues */
+	cs.iActionQDiscardMark = 9800;			/* begin to discard messages */
+	cs.iActionQDiscardSeverity = 8;			/* discard warning and above */
+	cs.iActionQueueNumWorkers = 1;			/* number of worker threads for the mm queue above */
+	cs.iActionQueMaxFileSize = 1024*1024;
+	cs.iActionQPersistUpdCnt = 0;			/* persist queue info every n updates */
+	cs.bActionQSyncQeueFiles = 0;
+	cs.iActionQtoQShutdown = 0;			/* queue shutdown */ 
+	cs.iActionQtoActShutdown = 1000;		/* action shutdown (in phase 2) */ 
+	cs.iActionQtoEnq = 2000;			/* timeout for queue enque */ 
+	cs.iActionQtoWrkShutdown = 60000;		/* timeout for worker thread shutdown */
+	cs.iActionQWrkMinMsgs = 100;			/* minimum messages per worker needed to start a new one */
+	cs.bActionQSaveOnShutdown = 1;			/* save queue on shutdown (when DA enabled)? */
+	cs.iActionQueMaxDiskSpace = 0;
+	cs.iActionQueueDeqSlowdown = 0;
+	cs.iActionQueueDeqtWinFromHr = 0;
+	cs.iActionQueueDeqtWinToHr = 25;		/* 25 disables time windowed dequeuing */
 
-	glbliActionResumeRetryCount = 0;		/* I guess it is smart to reset this one, too */
+	cs.glbliActionResumeRetryCount = 0;		/* I guess it is smart to reset this one, too */
 
-	d_free(pszActionQFName);
-	pszActionQFName = NULL;				/* prefix for the main message queue file */
+	d_free(cs.pszActionQFName);
+	cs.pszActionQFName = NULL;			/* prefix for the main message queue file */
 
 	RETiRet;
 }
@@ -263,8 +297,8 @@ rsRetVal actionConstruct(action_t **ppThis)
 	ASSERT(ppThis != NULL);
 	
 	CHKmalloc(pThis = (action_t*) calloc(1, sizeof(action_t)));
-	pThis->iResumeInterval = glbliActionResumeInterval;
-	pThis->iResumeRetryCount = glbliActionResumeRetryCount;
+	pThis->iResumeInterval = cs.glbliActionResumeInterval;
+	pThis->iResumeRetryCount = cs.glbliActionResumeRetryCount;
 	pThis->tLastOccur = datetime.GetTime(NULL);	/* done once per action on startup only */
 	pthread_mutex_init(&pThis->mutActExec, NULL);
 	INIT_ATOMIC_HELPER_MUT(pThis->mutCAS);
@@ -323,7 +357,7 @@ actionConstructFinalize(action_t *pThis)
 	 * msg object thread safety in this case (this costs a bit performance and thus
 	 * is not enabled by default. -- rgerhards, 2008-02-20
 	 */
-	if(ActionQueType != QUEUETYPE_DIRECT)
+	if(cs.ActionQueType != QUEUETYPE_DIRECT)
 		MsgEnableThreadSafety();
 
 	/* create queue */
@@ -332,7 +366,7 @@ actionConstructFinalize(action_t *pThis)
 	 * to be run on multiple threads. So far, this is forbidden by the interface
 	 * spec. -- rgerhards, 2008-01-30
 	 */
-	CHKiRet(qqueueConstruct(&pThis->pQueue, ActionQueType, 1, iActionQueueSize,
+	CHKiRet(qqueueConstruct(&pThis->pQueue, cs.ActionQueType, 1, cs.iActionQueueSize,
 					(rsRetVal (*)(void*, batch_t*, int*))processBatchMain));
 	obj.SetName((obj_t*) pThis->pQueue, pszQName);
 
@@ -347,31 +381,31 @@ actionConstructFinalize(action_t *pThis)
 	}
 
 	qqueueSetpUsr(pThis->pQueue, pThis);
-	setQPROP(qqueueSetsizeOnDiskMax, "$ActionQueueMaxDiskSpace", iActionQueMaxDiskSpace);
-	setQPROP(qqueueSetiDeqBatchSize, "$ActionQueueDequeueBatchSize", iActionQueueDeqBatchSize);
-	setQPROP(qqueueSetMaxFileSize, "$ActionQueueFileSize", iActionQueMaxFileSize);
-	setQPROPstr(qqueueSetFilePrefix, "$ActionQueueFileName", pszActionQFName);
-	setQPROP(qqueueSetiPersistUpdCnt, "$ActionQueueCheckpointInterval", iActionQPersistUpdCnt);
-	setQPROP(qqueueSetbSyncQueueFiles, "$ActionQueueSyncQueueFiles", bActionQSyncQeueFiles);
-	setQPROP(qqueueSettoQShutdown, "$ActionQueueTimeoutShutdown", iActionQtoQShutdown );
-	setQPROP(qqueueSettoActShutdown, "$ActionQueueTimeoutActionCompletion", iActionQtoActShutdown);
-	setQPROP(qqueueSettoWrkShutdown, "$ActionQueueWorkerTimeoutThreadShutdown", iActionQtoWrkShutdown);
-	setQPROP(qqueueSettoEnq, "$ActionQueueTimeoutEnqueue", iActionQtoEnq);
-	setQPROP(qqueueSetiHighWtrMrk, "$ActionQueueHighWaterMark", iActionQHighWtrMark);
-	setQPROP(qqueueSetiLowWtrMrk, "$ActionQueueLowWaterMark", iActionQLowWtrMark);
-	setQPROP(qqueueSetiDiscardMrk, "$ActionQueueDiscardMark", iActionQDiscardMark);
-	setQPROP(qqueueSetiDiscardSeverity, "$ActionQueueDiscardSeverity", iActionQDiscardSeverity);
-	setQPROP(qqueueSetiMinMsgsPerWrkr, "$ActionQueueWorkerThreadMinimumMessages", iActionQWrkMinMsgs);
-	setQPROP(qqueueSetbSaveOnShutdown, "$ActionQueueSaveOnShutdown", bActionQSaveOnShutdown);
-	setQPROP(qqueueSetiDeqSlowdown,    "$ActionQueueDequeueSlowdown", iActionQueueDeqSlowdown);
-	setQPROP(qqueueSetiDeqtWinFromHr,  "$ActionQueueDequeueTimeBegin", iActionQueueDeqtWinFromHr);
-	setQPROP(qqueueSetiDeqtWinToHr,    "$ActionQueueDequeueTimeEnd", iActionQueueDeqtWinToHr);
+	setQPROP(qqueueSetsizeOnDiskMax, "$ActionQueueMaxDiskSpace", cs.iActionQueMaxDiskSpace);
+	setQPROP(qqueueSetiDeqBatchSize, "$ActionQueueDequeueBatchSize", cs.iActionQueueDeqBatchSize);
+	setQPROP(qqueueSetMaxFileSize, "$ActionQueueFileSize", cs.iActionQueMaxFileSize);
+	setQPROPstr(qqueueSetFilePrefix, "$ActionQueueFileName", cs.pszActionQFName);
+	setQPROP(qqueueSetiPersistUpdCnt, "$ActionQueueCheckpointInterval", cs.iActionQPersistUpdCnt);
+	setQPROP(qqueueSetbSyncQueueFiles, "$ActionQueueSyncQueueFiles", cs.bActionQSyncQeueFiles);
+	setQPROP(qqueueSettoQShutdown, "$ActionQueueTimeoutShutdown", cs.iActionQtoQShutdown );
+	setQPROP(qqueueSettoActShutdown, "$ActionQueueTimeoutActionCompletion", cs.iActionQtoActShutdown);
+	setQPROP(qqueueSettoWrkShutdown, "$ActionQueueWorkerTimeoutThreadShutdown", cs.iActionQtoWrkShutdown);
+	setQPROP(qqueueSettoEnq, "$ActionQueueTimeoutEnqueue", cs.iActionQtoEnq);
+	setQPROP(qqueueSetiHighWtrMrk, "$ActionQueueHighWaterMark", cs.iActionQHighWtrMark);
+	setQPROP(qqueueSetiLowWtrMrk, "$ActionQueueLowWaterMark", cs.iActionQLowWtrMark);
+	setQPROP(qqueueSetiDiscardMrk, "$ActionQueueDiscardMark", cs.iActionQDiscardMark);
+	setQPROP(qqueueSetiDiscardSeverity, "$ActionQueueDiscardSeverity", cs.iActionQDiscardSeverity);
+	setQPROP(qqueueSetiMinMsgsPerWrkr, "$ActionQueueWorkerThreadMinimumMessages", cs.iActionQWrkMinMsgs);
+	setQPROP(qqueueSetbSaveOnShutdown, "$ActionQueueSaveOnShutdown", cs.bActionQSaveOnShutdown);
+	setQPROP(qqueueSetiDeqSlowdown,    "$ActionQueueDequeueSlowdown", cs.iActionQueueDeqSlowdown);
+	setQPROP(qqueueSetiDeqtWinFromHr,  "$ActionQueueDequeueTimeBegin", cs.iActionQueueDeqtWinFromHr);
+	setQPROP(qqueueSetiDeqtWinToHr,    "$ActionQueueDequeueTimeEnd", cs.iActionQueueDeqtWinToHr);
 
 #	undef setQPROP
 #	undef setQPROPstr
 
 	dbgoprint((obj_t*) pThis->pQueue, "save on shutdown %d, max disk space allowed %lld\n",
-		   bActionQSaveOnShutdown, iActionQueMaxDiskSpace);
+		   cs.bActionQSaveOnShutdown, cs.iActionQueMaxDiskSpace);
  	
 
 	CHKiRet(qqueueStart(pThis->pQueue));
@@ -390,7 +424,7 @@ finalize_it:
  */
 rsRetVal actionSetGlobalResumeInterval(int iNewVal)
 {
-	glbliActionResumeInterval = iNewVal;
+	cs.glbliActionResumeInterval = iNewVal;
 	return RS_RET_OK;
 }
 
@@ -599,7 +633,7 @@ static rsRetVal actionTryResume(action_t *pThis, int *pbShutdownImmediate)
 		 * here. -- rgerhards, 2009-03-18
 		 */
 		datetime.GetTime(&ttNow); /* cache "now" */
-		if(ttNow > pThis->ttResumeRtry) {
+		if(ttNow >= pThis->ttResumeRtry) {
 			actionSetState(pThis, ACT_STATE_RTRY); /* back to retries */
 		}
 	}
@@ -611,8 +645,8 @@ static rsRetVal actionTryResume(action_t *pThis, int *pbShutdownImmediate)
 	}
 
 	if(Debug && (pThis->eState == ACT_STATE_RTRY ||pThis->eState == ACT_STATE_SUSP)) {
-		DBGPRINTF("actionTryResume: action state: %s, next retry (if applicable): %u [now %u]\n",
-			getActStateName(pThis), (unsigned) pThis->ttResumeRtry, (unsigned) ttNow);
+		DBGPRINTF("actionTryResume: action %p state: %s, next retry (if applicable): %u [now %u]\n",
+			pThis, getActStateName(pThis), (unsigned) pThis->ttResumeRtry, (unsigned) ttNow);
 	}
 
 finalize_it:
@@ -739,7 +773,7 @@ finalize_it:
  */
 static rsRetVal releaseBatch(action_t *pAction, batch_t *pBatch)
 {
-	int iArr;
+	int jArr;
 	int i, j;
 	batch_obj_t *pElem;
 	uchar ***ppMsgs;
@@ -753,15 +787,16 @@ static rsRetVal releaseBatch(action_t *pAction, batch_t *pBatch)
 			switch(pAction->eParamPassing) {
 			case ACT_ARRAY_PASSING:
 				ppMsgs = (uchar***) pElem->staticActParams;
-				for(i = 0 ; i < pAction->iNumTpls ; ++i) {
-					if(((uchar**)ppMsgs)[i] != NULL) {
-						iArr = 0;
-						while(ppMsgs[i][iArr] != NULL) {
-							d_free(ppMsgs[i][iArr++]);
-							ppMsgs[i][iArr++] = NULL;
+				for(j = 0 ; j < pAction->iNumTpls ; ++j) {
+					if(((uchar**)ppMsgs)[j] != NULL) {
+						jArr = 0;
+						while(ppMsgs[j][jArr] != NULL) {
+							d_free(ppMsgs[j][jArr]);
+							ppMsgs[j][jArr] = NULL;
+							++jArr;
 						}
-						d_free(((uchar**)ppMsgs)[i]);
-						((uchar**)ppMsgs)[i] = NULL;
+						d_free(((uchar**)ppMsgs)[j]);
+						((uchar**)ppMsgs)[j] = NULL;
 					}
 				}
 				break;
@@ -932,28 +967,37 @@ tryDoAction(action_t *pAction, batch_t *pBatch, int *pnElem)
 	i = pBatch->iDoneUpTo;	/* all messages below that index are processed */
 	iElemProcessed = 0;
 	iCommittedUpTo = i;
+	DBGPRINTF("tryDoAction %p, pnElem %d, nElem %d\n", pAction, *pnElem, pBatch->nElem);
 	while(iElemProcessed <= *pnElem && i < pBatch->nElem) {
 		if(*(pBatch->pbShutdownImmediate))
 			ABORT_FINALIZE(RS_RET_FORCE_TERM);
+		/* NOTE: do NOT extend the filter below! Anything else must be done on the
+		 * enq side of the queue (see file header comment)! -- rgerhards, 2011-06-15
+		 */
 		if(   pBatch->pElem[i].bFilterOK
-		   && pBatch->pElem[i].state != BATCH_STATE_DISC//) {
-		   && ((pAction->bExecWhenPrevSusp  == 0) || pBatch->pElem[i].bPrevWasSuspended) ) {
+		    && pBatch->pElem[i].state != BATCH_STATE_DISC) {
 			pMsg = (msg_t*) pBatch->pElem[i].pUsrp;
 			localRet = actionProcessMessage(pAction, pMsg, pBatch->pElem[i].staticActParams,
-						        pBatch->pbShutdownImmediate);
-			DBGPRINTF("action call returned %d\n", localRet);
+							pBatch->pbShutdownImmediate);
+			DBGPRINTF("action %p call returned %d\n", pAction, localRet);
 			/* Note: we directly modify the batch object state, because we know that
 			 * wo do not overwrite BATCH_STATE_DISC indicators!
 			 */
 			if(localRet == RS_RET_OK) {
 				/* mark messages as committed */
 				while(iCommittedUpTo <= i) {
-					pBatch->pElem[iCommittedUpTo++].state = BATCH_STATE_COMM;
+					pBatch->pElem[iCommittedUpTo].bPrevWasSuspended = 0; /* we had success! */
+					batchSetElemState(pBatch, iCommittedUpTo, BATCH_STATE_COMM);
+					++iCommittedUpTo;
+					//pBatch->pElem[iCommittedUpTo++].state = BATCH_STATE_COMM;
 				}
 			} else if(localRet == RS_RET_PREVIOUS_COMMITTED) {
 				/* mark messages as committed */
 				while(iCommittedUpTo < i) {
-					pBatch->pElem[iCommittedUpTo++].state = BATCH_STATE_COMM;
+					pBatch->pElem[iCommittedUpTo].bPrevWasSuspended = 0; /* we had success! */
+					batchSetElemState(pBatch, iCommittedUpTo, BATCH_STATE_COMM);
+					++iCommittedUpTo;
+					//pBatch->pElem[iCommittedUpTo++].state = BATCH_STATE_COMM;
 				}
 				pBatch->pElem[i].state = BATCH_STATE_SUB;
 			} else if(localRet == RS_RET_DEFER_COMMIT) {
@@ -976,6 +1020,15 @@ finalize_it:
 		pBatch->iDoneUpTo = iCommittedUpTo;
 	}
 	RETiRet;
+}
+
+/* debug aid */
+static void displayBatchState(batch_t *pBatch)
+{
+	int i;
+	for(i = 0 ; i < pBatch->nElem ; ++i) {
+		dbgprintf("XXXXX: displayBatchState2 %p[%d]: %d\n", pBatch, i, pBatch->pElem[i].state);
+	}
 }
 
 
@@ -1035,6 +1088,8 @@ submitBatch(action_t *pAction, batch_t *pBatch, int nElem)
 				bDone = 1;
 			} else {
 				/* retry with half as much. Depth is log_2 batchsize, so recursion is not too deep */
+				DBGPRINTF("submitBatch recursing trying to find and exclude the culprit "
+				          "for iRet %d\n", localRet);
 				submitBatch(pAction, pBatch, nElem / 2);
 				submitBatch(pAction, pBatch, nElem - (nElem / 2));
 				bDone = 1;
@@ -1181,16 +1236,16 @@ static rsRetVal setActionQueType(void __attribute__((unused)) *pVal, uchar *pszT
 	DEFiRet;
 
 	if (!strcasecmp((char *) pszType, "fixedarray")) {
-		ActionQueType = QUEUETYPE_FIXED_ARRAY;
+		cs.ActionQueType = QUEUETYPE_FIXED_ARRAY;
 		DBGPRINTF("action queue type set to FIXED_ARRAY\n");
 	} else if (!strcasecmp((char *) pszType, "linkedlist")) {
-		ActionQueType = QUEUETYPE_LINKEDLIST;
+		cs.ActionQueType = QUEUETYPE_LINKEDLIST;
 		DBGPRINTF("action queue type set to LINKEDLIST\n");
 	} else if (!strcasecmp((char *) pszType, "disk")) {
-		ActionQueType = QUEUETYPE_DISK;
+		cs.ActionQueType = QUEUETYPE_DISK;
 		DBGPRINTF("action queue type set to DISK\n");
 	} else if (!strcasecmp((char *) pszType, "direct")) {
-		ActionQueType = QUEUETYPE_DIRECT;
+		cs.ActionQueType = QUEUETYPE_DIRECT;
 		DBGPRINTF("action queue type set to DIRECT (no queueing at all)\n");
 	} else {
 		errmsg.LogError(0, RS_RET_INVALID_PARAMS, "unknown actionqueue parameter: %s", (char *) pszType);
@@ -1216,7 +1271,7 @@ doSubmitToActionQ(action_t *pAction, msg_t *pMsg)
 	if(pAction->pQueue->qType == QUEUETYPE_DIRECT)
 		iRet = qqueueEnqObjDirect(pAction->pQueue, (void*) MsgAddRef(pMsg));
 	else
-		iRet = qqueueEnqObj(pAction->pQueue, pMsg->flowCtlType, (void*) MsgAddRef(pMsg));
+		iRet = qqueueEnqObj(pAction->pQueue, eFLOWCTL_NO_DELAY, (void*) MsgAddRef(pMsg));
 
 	RETiRet;
 }
@@ -1224,11 +1279,13 @@ doSubmitToActionQ(action_t *pAction, msg_t *pMsg)
 
 /* This function builds up a batch of messages to be (later)
  * submitted to the action queue.
- * Note: this function is also called from syslogd itself as part of its
- * flush processing. If so, pBatch will be NULL and idxBtch undefined.
+ * Important: this function MUST not be called with messages that are to
+ * be discarded due to their "prevWasSuspended" state. It will not check for
+ * this and submit all messages to the queue for execution. So these must
+ * be filtered out before calling us (what is done currently!).
  */
 rsRetVal
-actionWriteToAction(action_t *pAction, batch_t *pBatch, int idxBtch)
+actionWriteToAction(action_t *pAction)
 {
 	msg_t *pMsgSave;	/* to save current message pointer, necessary to restore
 				   it in case it needs to be updated (e.g. repeated msgs) */
@@ -1313,7 +1370,6 @@ actionWriteToAction(action_t *pAction, batch_t *pBatch, int idxBtch)
 		DBGPRINTF("action not yet ready again to be executed, onceInterval %d, tCurr %d, tNext %d\n",
 			  (int) pAction->iSecsExecOnceInterval, (int) getActNow(pAction),
 			  (int) (pAction->iSecsExecOnceInterval + pAction->tLastExec));
-		pAction->tLastExec = getActNow(pAction); /* re-init time flags */
 		FINALIZE;
 	}
 
@@ -1325,35 +1381,7 @@ actionWriteToAction(action_t *pAction, batch_t *pBatch, int idxBtch)
 	/* When we reach this point, we have a valid, non-disabled action.
 	 * So let's enqueue our message for execution. -- rgerhards, 2007-07-24
 	 */
-	if(   pBatch != NULL
-	   && (pAction->bExecWhenPrevSusp  == 1 && pBatch->pElem[idxBtch].bPrevWasSuspended)) {
-		/* in that case, we need to create a special batch which reflects the
-		 * suspended state. Otherwise, that information would be dropped inside
-		 * the queue engine. TODO: in later releases (v6?) create a better
-		 * solution than what we do here. However, for v5 this sounds much too
-		 * intrusive. -- rgerhardsm, 2011-03-16
-		 * (Code is copied over from queue.c and slightly modified)
-		 */
-		batch_t singleBatch;
-		batch_obj_t batchObj;
-		int i;
-		memset(&batchObj, 0, sizeof(batch_obj_t));
-		memset(&singleBatch, 0, sizeof(batch_t));
-		batchObj.state = BATCH_STATE_RDY;
-		batchObj.pUsrp = (obj_t*) pAction->f_pMsg;
-		batchObj.bPrevWasSuspended = 1;
-		batchObj.bFilterOK = 1;
-		singleBatch.nElem = 1; /* there always is only one in direct mode */
-		singleBatch.pElem = &batchObj;
-
-		iRet = qqueueEnqObjDirectBatch(pAction->pQueue, &singleBatch);
-
-		for(i = 0 ; i < CONF_OMOD_NUMSTRINGS_MAXSIZE ; ++i) {
-			free(batchObj.staticActStrings[i]);
-		}
-	} else { /* standard case, just submit */
-		iRet = doSubmitToActionQ(pAction, pAction->f_pMsg);
-	}
+	iRet = doSubmitToActionQ(pAction, pAction->f_pMsg);
 
 	if(iRet == RS_RET_OK)
 		pAction->f_prevcount = 0; /* message processed, so we start a new cycle */
@@ -1413,7 +1441,7 @@ doActionCallAction(action_t *pAction, batch_t *pBatch, int idxBtch)
 		 * isolated messages), but back off so we'll flush less often in the future.
 		 */
 		if(getActNow(pAction) > REPEATTIME(pAction)) {
-			iRet = actionWriteToAction(pAction, pBatch, idxBtch);
+			iRet = actionWriteToAction(pAction);
 			BACKOFF(pAction);
 		}
 	} else {/* new message, save it */
@@ -1422,7 +1450,7 @@ doActionCallAction(action_t *pAction, batch_t *pBatch, int idxBtch)
 		 */
 		if(pAction->f_pMsg != NULL) {
 			if(pAction->f_prevcount > 0)
-				actionWriteToAction(pAction, pBatch, idxBtch);
+				actionWriteToAction(pAction);
 				/* we do not care about iRet above - I think it's right but if we have
 				 * some troubles, you know where to look at ;) -- rgerhards, 2007-08-01
 				 */
@@ -1430,7 +1458,7 @@ doActionCallAction(action_t *pAction, batch_t *pBatch, int idxBtch)
 		}
 		pAction->f_pMsg = MsgAddRef(pMsg);
 		/* call the output driver */
-		iRet = actionWriteToAction(pAction, pBatch, idxBtch);
+		iRet = actionWriteToAction(pAction);
 	}
 
 finalize_it:
@@ -1459,7 +1487,6 @@ doSubmitToActionQNotAllMarkBatch(action_t *pAction, batch_t *pBatch)
 	time_t now = 0;
 	time_t lastAct;
 	int i;
-	int bProcessMarkMsgs = 0;
 	int bModifiedFilter;
 	sbool FilterSave[1024];
 	sbool *pFilterSave;
@@ -1473,33 +1500,32 @@ doSubmitToActionQNotAllMarkBatch(action_t *pAction, batch_t *pBatch)
 
 	bModifiedFilter = 0;
 	for(i = 0 ; i < batchNumMsgs(pBatch) ; ++i) {
+		if(!pBatch->pElem[i].bFilterOK)
+			continue;
 		pFilterSave[i] = pBatch->pElem[i].bFilterOK;
-		if(((msg_t*)(pBatch->pElem[i].pUsrp))->msgFlags & MARK) {
-			/* check if we need to write or not */
-			if(now == 0) {
-				now = datetime.GetTime(NULL); /* good time call - the only one done */
-				/* CAS loop, we write back a bit early, but that's OK... */
-				/* we use reception time, not dequeue time - this is considered more appropriate and
-				 * also faster ;) -- rgerhards, 2008-09-17 */
-				do {
-					lastAct = pAction->f_time;
-					if((now - lastAct) <  MarkInterval / 2) {
-						DBGPRINTF("action was recently called, ignoring mark message\n");
-						bProcessMarkMsgs = 0;
-					} else {
-						bProcessMarkMsgs = 1;
-					}
-				} while(ATOMIC_CAS_time_t(&pAction->f_time, lastAct,
-					((msg_t*)(pBatch->pElem[i].pUsrp))->ttGenTime, &pAction->mutCAS) == 0);
+		if(now == 0) {
+			now = datetime.GetTime(NULL); /* good time call - the only one done */
+		}
+		/* CAS loop, we write back a bit early, but that's OK... */
+		/* we use reception time, not dequeue time - this is considered more appropriate and
+		 * also faster ;) -- rgerhards, 2008-09-17 */
+		do {
+			lastAct = pAction->f_time;
+			if(((msg_t*)(pBatch->pElem[i].pUsrp))->msgFlags & MARK) {
+				if((now - lastAct) < MarkInterval / 2) {
+					pBatch->pElem[i].bFilterOK = 0;
+					bModifiedFilter = 1;
+					DBGPRINTF("action was recently called, ignoring mark message\n");
+					break; /* do not update timestamp for non-written mark messages */
+				}
 			}
-			if(bProcessMarkMsgs) {
-				pBatch->pElem[i].bFilterOK = 0;
-				bModifiedFilter = 1;
-			}
+		} while(ATOMIC_CAS_time_t(&pAction->f_time, lastAct,
+			((msg_t*)(pBatch->pElem[i].pUsrp))->ttGenTime, &pAction->mutCAS) == 0);
+		if(pBatch->pElem[i].bFilterOK) {
+			DBGPRINTF("Called action(NotAllMark), processing batch[%d] via '%s'\n",
+				  i, module.GetStateName(pAction->pMod));
 		}
 	}
-	
-	DBGPRINTF("Called action(NotAllMark), logging to %s\n", module.GetStateName(pAction->pMod));
 
 	iRet = doSubmitToActionQBatch(pAction, pBatch);
 
@@ -1519,6 +1545,69 @@ finalize_it:
 }
 
 
+/* enqueue a batch in direct mode. We have put this into its own function just to avoid
+ * cluttering the actual submit function.
+ * rgerhards, 2011-06-16
+ */
+static inline rsRetVal
+doQueueEnqObjDirectBatch(action_t *pAction, batch_t *pBatch)
+{
+	sbool FilterSave[1024];
+	sbool *pFilterSave;
+	sbool bNeedSubmit;
+	sbool bModifiedFilter;
+	int i;
+	DEFiRet;
+
+	if(batchNumMsgs(pBatch) <= (int) (sizeof(FilterSave)/sizeof(sbool))) {
+		pFilterSave = FilterSave;
+	} else {
+		CHKmalloc(pFilterSave = malloc(batchNumMsgs(pBatch) * sizeof(sbool)));
+	}
+
+	/* note: for direct mode, we need to adjust the filter property. For non-direct
+	 * this is not necessary, because in that case we enqueue only what actually needs
+	 * to be processed.
+	 */
+	if(pAction->bExecWhenPrevSusp) {
+		bNeedSubmit = 0;
+		bModifiedFilter = 0;
+		for(i = 0 ; i < batchNumMsgs(pBatch) && !*(pBatch->pbShutdownImmediate) ; ++i) {
+			pFilterSave[i] = pBatch->pElem[i].bFilterOK;
+			if(!pBatch->pElem[i].bPrevWasSuspended) {
+				DBGPRINTF("action enq stage: change bFilterOK to 0 due to "
+					  "failover case in elem %d\n", i);
+				pBatch->pElem[i].bFilterOK = 0;
+				bModifiedFilter = 1;
+			}
+			if(pBatch->pElem[i].bFilterOK)
+				bNeedSubmit = 1;
+			DBGPRINTF("action %p[%d]: filterOK:%d state:%d execWhenPrev:%d prevWasSusp:%d\n",
+				   pAction, i, pBatch->pElem[i].bFilterOK,  pBatch->pElem[i].state,
+				   pAction->bExecWhenPrevSusp, pBatch->pElem[i].bPrevWasSuspended);
+		}
+		if(bNeedSubmit) {
+			iRet = qqueueEnqObjDirectBatch(pAction->pQueue, pBatch);
+		} else {
+			DBGPRINTF("no need to submit batch, all bFilterOK==0\n");
+		}
+		if(bModifiedFilter) {
+			for(i = 0 ; i < batchNumMsgs(pBatch) ; ++i) {
+				DBGPRINTF("action %p: filterOK:%d state:%d execWhenPrev:%d prevWasSusp:%d\n",
+					   pAction, pBatch->pElem[i].bFilterOK,  pBatch->pElem[i].state,
+					   pAction->bExecWhenPrevSusp, pBatch->pElem[i].bPrevWasSuspended);
+				/* note: clang static code analyzer reports a false positive below */
+				pBatch->pElem[i].bFilterOK = pFilterSave[i];
+			}
+		}
+	} else {
+		iRet = qqueueEnqObjDirectBatch(pAction->pQueue, pBatch);
+	}
+
+finalize_it:
+	RETiRet;
+}
+
 /* This submits the message to the action queue in case we do NOT need to handle repeat
  * message processing. That case permits us to gain lots of freedom during processing
  * and thus speed.
@@ -1531,13 +1620,19 @@ doSubmitToActionQBatch(action_t *pAction, batch_t *pBatch)
 	DEFiRet;
 
 	DBGPRINTF("Called action(Batch), logging to %s\n", module.GetStateName(pAction->pMod));
-	if(pAction->pQueue->qType == QUEUETYPE_DIRECT)
-		iRet = qqueueEnqObjDirectBatch(pAction->pQueue, pBatch);
-	else {  /* in this case, we do single submits to the queue. 
+
+	if(pAction->pQueue->qType == QUEUETYPE_DIRECT) {
+		iRet = doQueueEnqObjDirectBatch(pAction, pBatch);
+	} else {/* in this case, we do single submits to the queue. 
 		 * TODO: optimize this, we may do at least a multi-submit!
 		 */
 		for(i = 0 ; i < batchNumMsgs(pBatch) && !*(pBatch->pbShutdownImmediate) ; ++i) {
-			if(pBatch->pElem[i].bFilterOK) {
+			DBGPRINTF("action %p: filterOK:%d state:%d execWhenPrev:%d prevWasSusp:%d\n",
+		           pAction, pBatch->pElem[i].bFilterOK,  pBatch->pElem[i].state,
+			   pAction->bExecWhenPrevSusp, pBatch->pElem[i].bPrevWasSuspended);
+			if(   pBatch->pElem[i].bFilterOK
+			   && pBatch->pElem[i].state != BATCH_STATE_DISC
+			   && (pAction->bExecWhenPrevSusp == 0 || pBatch->pElem[i].bPrevWasSuspended == 1)) {
 				doSubmitToActionQ(pAction, (msg_t*)(pBatch->pElem[i].pUsrp));
 			}
 		}
@@ -1558,8 +1653,12 @@ helperSubmitToActionQComplexBatch(action_t *pAction, batch_t *pBatch)
 	int i;
 	DEFiRet;
 
-	DBGPRINTF("Called action(complex case), logging to %s\n", module.GetStateName(pAction->pMod));
+	DBGPRINTF("Called action %p (complex case), logging to %s\n",
+		  pAction, module.GetStateName(pAction->pMod));
 	for(i = 0 ; i < batchNumMsgs(pBatch) && !*(pBatch->pbShutdownImmediate) ; ++i) {
+		DBGPRINTF("action %p: filterOK:%d state:%d execWhenPrev:%d prevWasSusp:%d\n",
+		           pAction, pBatch->pElem[i].bFilterOK,  pBatch->pElem[i].state,
+			   pAction->bExecWhenPrevSusp, pBatch->pElem[i].bPrevWasSuspended);
 		if(   pBatch->pElem[i].bFilterOK
                    && pBatch->pElem[i].state != BATCH_STATE_DISC
 		   && ((pAction->bExecWhenPrevSusp  == 0) || pBatch->pElem[i].bPrevWasSuspended) ) {
@@ -1612,17 +1711,17 @@ addAction(action_t **ppAction, modInfo_t *pMod, void *pModData, omodStringReques
 	CHKiRet(actionConstruct(&pAction)); /* create action object first */
 	pAction->pMod = pMod;
 	pAction->pModData = pModData;
-	pAction->pszName = pszActionName;
-	pszActionName = NULL;	/* free again! */
-	pAction->bWriteAllMarkMsgs = bActionWriteAllMarkMsgs;
-	bActionWriteAllMarkMsgs = FALSE; /* reset */
-	pAction->bExecWhenPrevSusp = bActExecWhenPrevSusp;
-	pAction->iSecsExecOnceInterval = iActExecOnceInterval;
-	pAction->iExecEveryNthOccur = iActExecEveryNthOccur;
-	pAction->iExecEveryNthOccurTO = iActExecEveryNthOccurTO;
-	pAction->bRepMsgHasMsg = bActionRepMsgHasMsg;
-	iActExecEveryNthOccur = 0; /* auto-reset */
-	iActExecEveryNthOccurTO = 0; /* auto-reset */
+	pAction->pszName = cs.pszActionName;
+	cs.pszActionName = NULL;	/* free again! */
+	pAction->bWriteAllMarkMsgs = cs.bActionWriteAllMarkMsgs;
+	cs.bActionWriteAllMarkMsgs = FALSE; /* reset */
+	pAction->bExecWhenPrevSusp = cs.bActExecWhenPrevSusp;
+	pAction->iSecsExecOnceInterval = cs.iActExecOnceInterval;
+	pAction->iExecEveryNthOccur = cs.iActExecEveryNthOccur;
+	pAction->iExecEveryNthOccurTO = cs.iActExecEveryNthOccurTO;
+	pAction->bRepMsgHasMsg = cs.bActionRepMsgHasMsg;
+	cs.iActExecEveryNthOccur = 0; /* auto-reset */
+	cs.iActExecEveryNthOccurTO = 0; /* auto-reset */
 
 	/* check if we can obtain the template pointers - TODO: move to separate function? */
 	pAction->iNumTpls = OMSRgetEntryCount(pOMSR);
@@ -1710,9 +1809,61 @@ finalize_it:
 static rsRetVal
 resetConfigVariables(uchar __attribute__((unused)) *pp, void __attribute__((unused)) *pVal)
 {
-	iActExecOnceInterval = 0;
+	cs.iActExecOnceInterval = 0;
+	cs.bActExecWhenPrevSusp = 0;
 	return RS_RET_OK;
 }
+
+
+/* initialize (current) config variables.
+ * Used at program start and when a new scope is created.
+ */
+static inline void
+initConfigVariables(void)
+{
+	cs.bActionWriteAllMarkMsgs = FALSE;
+	cs.glbliActionResumeRetryCount = 0;
+	cs.bActExecWhenPrevSusp = 0;
+	cs.iActExecOnceInterval = 0;
+	cs.iActExecEveryNthOccur = 0;
+	cs.iActExecEveryNthOccurTO = 0;
+	cs.glbliActionResumeInterval = 30;
+	cs.glbliActionResumeRetryCount = 0;
+	cs.bActionRepMsgHasMsg = 0;
+	if(cs.pszActionName != NULL) {
+		free(cs.pszActionName);
+		cs.pszActionName = NULL;
+	}
+	actionResetQueueParams();
+}
+
+
+/* save our config and create a new scope. Note that things are messed up if
+ * this is called while the config is already saved (we currently do not
+ * have a stack as the design is we need none!
+ * rgerhards, 2010-07-23
+ */
+rsRetVal
+actionNewScope(void)
+{
+	DEFiRet;
+	memcpy(&cs_save, &cs, sizeof(cs));
+	initConfigVariables();
+	RETiRet;
+}
+
+
+/* restore previously saved scope.
+ * rgerhards, 2010-07-23
+ */
+rsRetVal
+actionRestoreScope(void)
+{
+	DEFiRet;
+	memcpy(&cs, &cs_save, sizeof(cs));
+	RETiRet;
+}
+
 
 
 /* TODO: we are not yet a real object, the ClassInit here just looks like it is..
@@ -1726,35 +1877,39 @@ rsRetVal actionClassInit(void)
 	CHKiRet(objUse(module, CORE_COMPONENT));
 	CHKiRet(objUse(errmsg, CORE_COMPONENT));
 
-	CHKiRet(regCfSysLineHdlr((uchar *)"actionname", 0, eCmdHdlrGetWord, NULL, &pszActionName, NULL));
-	CHKiRet(regCfSysLineHdlr((uchar *)"actionqueuefilename", 0, eCmdHdlrGetWord, NULL, &pszActionQFName, NULL));
-	CHKiRet(regCfSysLineHdlr((uchar *)"actionqueuesize", 0, eCmdHdlrInt, NULL, &iActionQueueSize, NULL));
-	CHKiRet(regCfSysLineHdlr((uchar *)"actionwriteallmarkmessages", 0, eCmdHdlrBinary, NULL, &bActionWriteAllMarkMsgs, NULL));
-	CHKiRet(regCfSysLineHdlr((uchar *)"actionqueuedequeuebatchsize", 0, eCmdHdlrInt, NULL, &iActionQueueDeqBatchSize, NULL));
-	CHKiRet(regCfSysLineHdlr((uchar *)"actionqueuemaxdiskspace", 0, eCmdHdlrSize, NULL, &iActionQueMaxDiskSpace, NULL));
-	CHKiRet(regCfSysLineHdlr((uchar *)"actionqueuehighwatermark", 0, eCmdHdlrInt, NULL, &iActionQHighWtrMark, NULL));
-	CHKiRet(regCfSysLineHdlr((uchar *)"actionqueuelowwatermark", 0, eCmdHdlrInt, NULL, &iActionQLowWtrMark, NULL));
-	CHKiRet(regCfSysLineHdlr((uchar *)"actionqueuediscardmark", 0, eCmdHdlrInt, NULL, &iActionQDiscardMark, NULL));
-	CHKiRet(regCfSysLineHdlr((uchar *)"actionqueuediscardseverity", 0, eCmdHdlrInt, NULL, &iActionQDiscardSeverity, NULL));
-	CHKiRet(regCfSysLineHdlr((uchar *)"actionqueuecheckpointinterval", 0, eCmdHdlrInt, NULL, &iActionQPersistUpdCnt, NULL));
-	CHKiRet(regCfSysLineHdlr((uchar *)"actionqueuesyncqueuefiles", 0, eCmdHdlrBinary, NULL, &bActionQSyncQeueFiles, NULL));
+	CHKiRet(regCfSysLineHdlr((uchar *)"actionname", 0, eCmdHdlrGetWord, NULL, &cs.pszActionName, NULL));
+	CHKiRet(regCfSysLineHdlr((uchar *)"actionqueuefilename", 0, eCmdHdlrGetWord, NULL, &cs.pszActionQFName, NULL));
+	CHKiRet(regCfSysLineHdlr((uchar *)"actionqueuesize", 0, eCmdHdlrInt, NULL, &cs.iActionQueueSize, NULL));
+	CHKiRet(regCfSysLineHdlr((uchar *)"actionwriteallmarkmessages", 0, eCmdHdlrBinary, NULL, &cs.bActionWriteAllMarkMsgs, NULL));
+	CHKiRet(regCfSysLineHdlr((uchar *)"actionqueuedequeuebatchsize", 0, eCmdHdlrInt, NULL, &cs.iActionQueueDeqBatchSize, NULL));
+	CHKiRet(regCfSysLineHdlr((uchar *)"actionqueuemaxdiskspace", 0, eCmdHdlrSize, NULL, &cs.iActionQueMaxDiskSpace, NULL));
+	CHKiRet(regCfSysLineHdlr((uchar *)"actionqueuehighwatermark", 0, eCmdHdlrInt, NULL, &cs.iActionQHighWtrMark, NULL));
+	CHKiRet(regCfSysLineHdlr((uchar *)"actionqueuelowwatermark", 0, eCmdHdlrInt, NULL, &cs.iActionQLowWtrMark, NULL));
+	CHKiRet(regCfSysLineHdlr((uchar *)"actionqueuediscardmark", 0, eCmdHdlrInt, NULL, &cs.iActionQDiscardMark, NULL));
+	CHKiRet(regCfSysLineHdlr((uchar *)"actionqueuediscardseverity", 0, eCmdHdlrInt, NULL, &cs.iActionQDiscardSeverity, NULL));
+	CHKiRet(regCfSysLineHdlr((uchar *)"actionqueuecheckpointinterval", 0, eCmdHdlrInt, NULL, &cs.iActionQPersistUpdCnt, NULL));
+	CHKiRet(regCfSysLineHdlr((uchar *)"actionqueuesyncqueuefiles", 0, eCmdHdlrBinary, NULL, &cs.bActionQSyncQeueFiles, NULL));
 	CHKiRet(regCfSysLineHdlr((uchar *)"actionqueuetype", 0, eCmdHdlrGetWord, setActionQueType, NULL, NULL));
-	CHKiRet(regCfSysLineHdlr((uchar *)"actionqueueworkerthreads", 0, eCmdHdlrInt, NULL, &iActionQueueNumWorkers, NULL));
-	CHKiRet(regCfSysLineHdlr((uchar *)"actionqueuetimeoutshutdown", 0, eCmdHdlrInt, NULL, &iActionQtoQShutdown, NULL));
-	CHKiRet(regCfSysLineHdlr((uchar *)"actionqueuetimeoutactioncompletion", 0, eCmdHdlrInt, NULL, &iActionQtoActShutdown, NULL));
-	CHKiRet(regCfSysLineHdlr((uchar *)"actionqueuetimeoutenqueue", 0, eCmdHdlrInt, NULL, &iActionQtoEnq, NULL));
-	CHKiRet(regCfSysLineHdlr((uchar *)"actionqueueworkertimeoutthreadshutdown", 0, eCmdHdlrInt, NULL, &iActionQtoWrkShutdown, NULL));
-	CHKiRet(regCfSysLineHdlr((uchar *)"actionqueueworkerthreadminimummessages", 0, eCmdHdlrInt, NULL, &iActionQWrkMinMsgs, NULL));
-	CHKiRet(regCfSysLineHdlr((uchar *)"actionqueuemaxfilesize", 0, eCmdHdlrSize, NULL, &iActionQueMaxFileSize, NULL));
-	CHKiRet(regCfSysLineHdlr((uchar *)"actionqueuesaveonshutdown", 0, eCmdHdlrBinary, NULL, &bActionQSaveOnShutdown, NULL));
-	CHKiRet(regCfSysLineHdlr((uchar *)"actionqueuedequeueslowdown", 0, eCmdHdlrInt, NULL, &iActionQueueDeqSlowdown, NULL));
-	CHKiRet(regCfSysLineHdlr((uchar *)"actionqueuedequeuetimebegin", 0, eCmdHdlrInt, NULL, &iActionQueueDeqtWinFromHr, NULL));
-	CHKiRet(regCfSysLineHdlr((uchar *)"actionqueuedequeuetimeend", 0, eCmdHdlrInt, NULL, &iActionQueueDeqtWinToHr, NULL));
-	CHKiRet(regCfSysLineHdlr((uchar *)"actionexeconlyeverynthtime", 0, eCmdHdlrInt, NULL, &iActExecEveryNthOccur, NULL));
-	CHKiRet(regCfSysLineHdlr((uchar *)"actionexeconlyeverynthtimetimeout", 0, eCmdHdlrInt, NULL, &iActExecEveryNthOccurTO, NULL));
-	CHKiRet(regCfSysLineHdlr((uchar *)"actionexeconlyonceeveryinterval", 0, eCmdHdlrInt, NULL, &iActExecOnceInterval, NULL));
-	CHKiRet(regCfSysLineHdlr((uchar *)"repeatedmsgcontainsoriginalmsg", 0, eCmdHdlrBinary, NULL, &bActionRepMsgHasMsg, NULL));
+	CHKiRet(regCfSysLineHdlr((uchar *)"actionqueueworkerthreads", 0, eCmdHdlrInt, NULL, &cs.iActionQueueNumWorkers, NULL));
+	CHKiRet(regCfSysLineHdlr((uchar *)"actionqueuetimeoutshutdown", 0, eCmdHdlrInt, NULL, &cs.iActionQtoQShutdown, NULL));
+	CHKiRet(regCfSysLineHdlr((uchar *)"actionqueuetimeoutactioncompletion", 0, eCmdHdlrInt, NULL, &cs.iActionQtoActShutdown, NULL));
+	CHKiRet(regCfSysLineHdlr((uchar *)"actionqueuetimeoutenqueue", 0, eCmdHdlrInt, NULL, &cs.iActionQtoEnq, NULL));
+	CHKiRet(regCfSysLineHdlr((uchar *)"actionqueueworkertimeoutthreadshutdown", 0, eCmdHdlrInt, NULL, &cs.iActionQtoWrkShutdown, NULL));
+	CHKiRet(regCfSysLineHdlr((uchar *)"actionqueueworkerthreadminimummessages", 0, eCmdHdlrInt, NULL, &cs.iActionQWrkMinMsgs, NULL));
+	CHKiRet(regCfSysLineHdlr((uchar *)"actionqueuemaxfilesize", 0, eCmdHdlrSize, NULL, &cs.iActionQueMaxFileSize, NULL));
+	CHKiRet(regCfSysLineHdlr((uchar *)"actionqueuesaveonshutdown", 0, eCmdHdlrBinary, NULL, &cs.bActionQSaveOnShutdown, NULL));
+	CHKiRet(regCfSysLineHdlr((uchar *)"actionqueuedequeueslowdown", 0, eCmdHdlrInt, NULL, &cs.iActionQueueDeqSlowdown, NULL));
+	CHKiRet(regCfSysLineHdlr((uchar *)"actionqueuedequeuetimebegin", 0, eCmdHdlrInt, NULL, &cs.iActionQueueDeqtWinFromHr, NULL));
+	CHKiRet(regCfSysLineHdlr((uchar *)"actionqueuedequeuetimeend", 0, eCmdHdlrInt, NULL, &cs.iActionQueueDeqtWinToHr, NULL));
+	CHKiRet(regCfSysLineHdlr((uchar *)"actionexeconlyeverynthtime", 0, eCmdHdlrInt, NULL, &cs.iActExecEveryNthOccur, NULL));
+	CHKiRet(regCfSysLineHdlr((uchar *)"actionexeconlyeverynthtimetimeout", 0, eCmdHdlrInt, NULL, &cs.iActExecEveryNthOccurTO, NULL));
+	CHKiRet(regCfSysLineHdlr((uchar *)"actionexeconlyonceeveryinterval", 0, eCmdHdlrInt, NULL, &cs.iActExecOnceInterval, NULL));
+	CHKiRet(regCfSysLineHdlr((uchar *)"repeatedmsgcontainsoriginalmsg", 0, eCmdHdlrBinary, NULL, &cs.bActionRepMsgHasMsg, NULL));
+	CHKiRet(regCfSysLineHdlr((uchar *)"actionexeconlywhenpreviousissuspended", 0, eCmdHdlrBinary, NULL, &cs.bActExecWhenPrevSusp, NULL));
+	CHKiRet(regCfSysLineHdlr((uchar *)"actionresumeretrycount", 0, eCmdHdlrInt, NULL, &cs.glbliActionResumeRetryCount, NULL));
 	CHKiRet(regCfSysLineHdlr((uchar *)"resetconfigvariables", 1, eCmdHdlrCustomHandler, resetConfigVariables, NULL, NULL));
+
+	initConfigVariables(); /* first-time init of config setings */
 
 finalize_it:
 	RETiRet;

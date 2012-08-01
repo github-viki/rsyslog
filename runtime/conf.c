@@ -6,32 +6,28 @@
  * because the config file handler will by dynamically be loaded and be
  * kept in memory only as long as the config file is actually being 
  * processed. Thereafter, it shall be unloaded. -- rgerhards
+ * Please note that the original syslogd.c source was under BSD license
+ * at the time of the rsyslog fork from sysklogd.
  *
- * TODO: the license MUST be changed to LGPL. However, we can not
- * currently do that, because we use some sysklogd code to crunch
- * the selector lines (e.g. *.info). That code is scheduled for removal
- * as part of RainerScript. After this is done, we can change licenses.
- *
- * Copyright 2008 Rainer Gerhards and Adiscon GmbH.
+ * Copyright 2008-2012 Rainer Gerhards and Adiscon GmbH.
  *
  * This file is part of rsyslog.
  *
- * Rsyslog is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * Rsyslog is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with Rsyslog.  If not, see <http://www.gnu.org/licenses/>.
- *
- * A copy of the GPL can be found in the file "COPYING" in this distribution.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ * 
+ *       http://www.apache.org/licenses/LICENSE-2.0
+ *       -or-
+ *       see COPYING.ASL20 in the source distribution
+ * 
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
-#define CFGLNSIZ 4096 /* the maximum size of a configuraton file line, after re-combination */
+#define CFGLNSIZ 64*1024 /* the maximum size of a configuraton file line, after re-combination */
 #include "config.h"
 #include <stdlib.h>
 #include <stdio.h>
@@ -52,7 +48,6 @@
 #endif
 
 #include "rsyslog.h"
-#include "../tools/syslogd.h" /* TODO: this must be removed! */
 #include "dirty.h"
 #include "parse.h"
 #include "action.h"
@@ -92,6 +87,10 @@ DEFobjCurrIf(errmsg)
 DEFobjCurrIf(net)
 DEFobjCurrIf(rule)
 DEFobjCurrIf(ruleset)
+
+ecslConfObjType currConfObj = eConfObjGlobal; /* to support scoping - which config object is currently active? */
+int bConfStrictScoping = 0;	/* force strict scoping during config processing? */
+
 
 static int iNbrActions = 0; /* number of currently defined actions */
 
@@ -449,6 +448,9 @@ processConfFile(uchar *pConfFile)
 			if ((p - cbuf) > CFGLNSIZ - 30) {
 				/* Oops the buffer is full - what now? */
 				cline = cbuf;
+				dbgprintf("buffer overflow extending config file\n");
+				errmsg.LogError(0, RS_RET_CONFIG_ERROR,
+					"error: config file line %d too long", iLnNbr);
 			} else {
 				*p = 0;
 				cline = p;
@@ -871,6 +873,14 @@ static rsRetVal cflineProcessPropFilter(uchar **pline, register rule_t *f)
 		rsParsDestruct(pPars);
 		return(iRet);
 	}
+	if(f->f_filterData.prop.propID == PROP_CEE) {
+		/* in CEE case, we need to preserve the actual property name */
+		if((f->f_filterData.prop.propName =
+		     es_newStrFromBuf((char*)cstrGetSzStrNoNULL(pCSPropName)+2, cstrLen(pCSPropName)-2)) == NULL) {
+			cstrDestruct(&pCSPropName);
+			return(RS_RET_ERR);
+		}
+	}
 	cstrDestruct(&pCSPropName);
 
 	/* read operation */
@@ -899,10 +909,13 @@ static rsRetVal cflineProcessPropFilter(uchar **pline, register rule_t *f)
 		iOffset = 0;
 	}
 
+dbgprintf("XXX: offset is %d, string '%s'\n", iOffset, rsCStrGetSzStrNoNULL(pCSCompOp));
 	if(!rsCStrOffsetSzStrCmp(pCSCompOp, iOffset, (uchar*) "contains", 8)) {
 		f->f_filterData.prop.operation = FIOP_CONTAINS;
 	} else if(!rsCStrOffsetSzStrCmp(pCSCompOp, iOffset, (uchar*) "isequal", 7)) {
 		f->f_filterData.prop.operation = FIOP_ISEQUAL;
+	} else if(!rsCStrOffsetSzStrCmp(pCSCompOp, iOffset, (uchar*) "isempty", 7)) {
+		f->f_filterData.prop.operation = FIOP_ISEMPTY;
 	} else if(!rsCStrOffsetSzStrCmp(pCSCompOp, iOffset, (uchar*) "startswith", 10)) {
 		f->f_filterData.prop.operation = FIOP_STARTSWITH;
 	} else if(!rsCStrOffsetSzStrCmp(pCSCompOp, iOffset, (unsigned char*) "regex", 5)) {
@@ -915,16 +928,19 @@ static rsRetVal cflineProcessPropFilter(uchar **pline, register rule_t *f)
 	}
 	rsCStrDestruct(&pCSCompOp); /* no longer needed */
 
-	/* read compare value */
-	iRet = parsQuotedCStr(pPars, &f->f_filterData.prop.pCSCompValue);
-	if(iRet != RS_RET_OK) {
-		errmsg.LogError(0, iRet, "error %d compare value property - ignoring selector", iRet);
-		rsParsDestruct(pPars);
-		return(iRet);
+dbgprintf("XXX: fiop is %u\n", (unsigned) f->f_filterData.prop.operation);
+	if(f->f_filterData.prop.operation != FIOP_ISEMPTY) {
+		/* read compare value */
+		iRet = parsQuotedCStr(pPars, &f->f_filterData.prop.pCSCompValue);
+		if(iRet != RS_RET_OK) {
+			errmsg.LogError(0, iRet, "error %d compare value property - ignoring selector", iRet);
+			rsParsDestruct(pPars);
+			return(iRet);
+		}
 	}
 
 	/* skip to action part */
-	if((iRet = parsSkipWhitespace(pPars)) != RS_RET_OK) {
+	if((iRet = parsSkipWhitespace(pPars, 1)) != RS_RET_OK) {
 		errmsg.LogError(0, iRet, "error %d skipping to action part - ignoring selector", iRet);
 		rsParsDestruct(pPars);
 		return(iRet);
@@ -1062,7 +1078,6 @@ static rsRetVal cflineDoFilter(uchar **pp, rule_t *f)
 	 * and, if so, we copy them over. rgerhards, 2005-10-18
 	 */
 	if(pDfltProgNameCmp != NULL) {
-RUNLOG_STR("dflt ProgNameCmp != NULL, setting opCSProgNameComp");
 		CHKiRet(rsCStrConstructFromCStr(&(f->pCSProgNameComp), pDfltProgNameCmp));
 	}
 
@@ -1102,6 +1117,11 @@ static rsRetVal cflineDoAction(uchar **p, action_t **ppAction)
 		iRet = pMod->mod.om.parseSelectorAct(p, &pModData, &pOMSR);
 		dbgprintf("tried selector action for %s: %d\n", module.GetName(pMod), iRet);
 		if(iRet == RS_RET_OK || iRet == RS_RET_SUSPENDED) {
+			/* advance our config parser state: we now only accept an $End as valid,
+			 * no more action statments.
+			 */
+			if(currConfObj == eConfObjAction)
+				currConfObj = eConfObjActionWaitEnd;
 			if((iRet = addAction(&pAction, pMod, pModData, pOMSR, (iRet == RS_RET_SUSPENDED)? 1 : 0)) == RS_RET_OK) {
 				/* now check if the module is compatible with select features */
 				if(pMod->isCompatibleWithFeature(sFEATURERepeatedMsgReduction) == RS_RET_OK)
@@ -1251,6 +1271,134 @@ finalize_it:
 ENDobjQueryInterface(conf)
 
 
+/* switch to a new action scope. This means that we switch the current 
+ * mode to action, but it also means we need to clear all scope variables,
+ * so that we have a new environment.
+ * rgerhards, 2010-07-23
+ */
+static inline rsRetVal
+setActionScope(void)
+{
+	DEFiRet;
+	modInfo_t *pMod;
+
+	currConfObj = eConfObjAction;
+	DBGPRINTF("entering action scope\n");
+	CHKiRet(actionNewScope());
+
+	/* now tell each action to start the scope */
+	pMod = NULL;
+	while((pMod = module.GetNxtType(pMod, eMOD_OUT)) != NULL) {
+		DBGPRINTF("NO LONGER SUPPORTED beginning scope on module %s\n", pMod->pszName);
+	}
+
+finalize_it:
+	RETiRet;
+}
+
+
+/* switch back from action scope.
+ * rgerhards, 2010-07-27
+ */
+static inline rsRetVal
+unsetActionScope(void)
+{
+	DEFiRet;
+	modInfo_t *pMod;
+
+	currConfObj = eConfObjAction;
+	DBGPRINTF("exiting action scope\n");
+	CHKiRet(actionRestoreScope());
+
+	/* now tell each action to restore the scope */
+	pMod = NULL;
+	while((pMod = module.GetNxtType(pMod, eMOD_OUT)) != NULL) {
+		DBGPRINTF("NO LONGER SUPPORTED exiting scope on module %s\n", pMod->pszName);
+	}
+
+finalize_it:
+	RETiRet;
+}
+
+
+/* This method is called by our own handlers to begin a new config
+ * object ($Begin statement). This also implies a new scope.
+ * rgerhards, 2010-07-23
+ */
+static rsRetVal
+beginConfObj(void __attribute__((unused)) *pVal, uchar *pszName)
+{
+	DEFiRet;
+
+	if(currConfObj != eConfObjGlobal) {
+		errmsg.LogError(0, RS_RET_CONF_NOT_GLBL, "not in global scope - can not nest $Begin");
+		ABORT_FINALIZE(RS_RET_CONF_NOT_GLBL);
+	}
+
+	if(!strcasecmp((char*)pszName, "action")) {
+		setActionScope();
+	} else {
+		errmsg.LogError(0, RS_RET_INVLD_CONF_OBJ, "invalid config object \"%s\" in $Begin", pszName);
+		ABORT_FINALIZE(RS_RET_INVLD_CONF_OBJ);
+	}
+
+finalize_it:
+	free(pszName); /* no longer needed */
+	RETiRet;
+}
+
+
+/* This method is called to end a config scope and switch
+ * back to global scope.
+ * rgerhards, 2010-07-23
+ */
+static rsRetVal
+endConfObj(void __attribute__((unused)) *pVal, uchar *pszName)
+{
+	DEFiRet;
+
+	if(currConfObj == eConfObjGlobal) {
+		errmsg.LogError(0, RS_RET_CONF_NOT_GLBL, "already in global scope - dangling $End");
+		ABORT_FINALIZE(RS_RET_CONF_IN_GLBL);
+	}
+
+	if(!strcasecmp((char*)pszName, "action")) {
+		if(currConfObj == eConfObjAction) {
+			errmsg.LogError(0, RS_RET_CONF_END_NO_ACT, "$End action but not action specified");
+			/* this is a warning, we continue processing in that case (unscope) */
+		} else if(currConfObj != eConfObjActionWaitEnd) {
+			errmsg.LogError(0, RS_RET_CONF_INVLD_END, "$End not for active config object - "
+							          "nesting error?");
+			ABORT_FINALIZE(RS_RET_CONF_INVLD_END);
+		}
+		currConfObj = eConfObjGlobal;
+		CHKiRet(unsetActionScope());
+	} else {
+		errmsg.LogError(0, RS_RET_INVLD_CONF_OBJ, "invalid config object \"%s\" in $End", pszName);
+		ABORT_FINALIZE(RS_RET_INVLD_CONF_OBJ);
+	}
+
+finalize_it:
+	free(pszName); /* no longer needed */
+	RETiRet;
+}
+
+
+/* Reset config variables to default values. Note that
+ * when we are inside an scope, we simply reset this to global.
+ * However, $ResetConfigVariables is a global directive, and as such
+ * will not be honored inside a scope!
+ * rgerhards, 2010-07-23
+ */
+static rsRetVal
+resetConfigVariables(uchar __attribute__((unused)) *pp, void __attribute__((unused)) *pVal)
+{
+	currConfObj = eConfObjGlobal;
+	bConfStrictScoping = 0;
+	return RS_RET_OK;
+}
+
+
 /* exit our class
  * rgerhards, 2008-03-11
  */
@@ -1291,6 +1439,11 @@ BEGINAbstractObjClassInit(conf, 1, OBJ_IS_CORE_MODULE) /* class, version - CHANG
 	CHKiRet(objUse(net, LM_NET_FILENAME)); /* TODO: make this dependcy go away! */
 	CHKiRet(objUse(rule, CORE_COMPONENT));
 	CHKiRet(objUse(ruleset, CORE_COMPONENT));
+
+ 	/* These commands will NOT be supported -- the new v6.3 config system provides
+	 * far better methods. We will remove the related code soon. -- rgerhards, 2012-01-09
+	 */
+	CHKiRet(regCfSysLineHdlr((uchar *)"resetconfigvariables", 1, eCmdHdlrCustomHandler, resetConfigVariables, NULL, NULL));
 ENDObjClassInit(conf)
 
 /* vi:set ai:

@@ -18,6 +18,7 @@ TESTS +=  \
 	imtcp_conndrop.sh \
 	imtcp_addtlframedelim.sh \
 	sndrcv.sh \
+	sndrcv_failover.sh \
 	sndrcv_gzip.sh \
 	sndrcv_udp.sh \
 	sndrcv_udp_nonstdpt.sh \
@@ -49,9 +50,14 @@ TESTS +=  \
 	imuxsock_logger_root.sh \
 	imuxsock_traillf_root.sh \
 	imuxsock_ccmiddle_root.sh \
+	udp-msgreduc-vg.sh \
+	udp-msgreduc-orgmsg-vg.sh \
+	queue-persist.sh 
 	discard-rptdmsg.sh \
 	discard-allmark.sh \
 	discard.sh \
+	failover-async.sh \
+	failover-double.sh \
 	failover-basic.sh \
 	failover-rptd.sh \
 	failover-no-rptd.sh \
@@ -94,6 +100,18 @@ TESTS +=  \
 	imptcp_large.sh \
 	imptcp_addtlframedelim.sh \
 	imptcp_conndrop.sh 
+endif
+
+if ENABLE_GNUTLS
+# TODO: re-enable in newer version
+#TESTS +=  \
+	#sndrcv_tls_anon.sh \
+	#sndrcv_tls_anon_rebind.sh \
+	#imtcp-tls-basic.sh
+if HAVE_VALGRIND
+# This test does not work on v5 as we keep DH params
+#TESTS += manytcp-too-few-tls.sh
+endif
 endif
 
 if ENABLE_OMUXSOCK
@@ -145,6 +163,12 @@ test_files = testbench.h runtime-dummy.c
 
 EXTRA_DIST= 1.rstest 2.rstest 3.rstest err1.rstest \
 	   validation-run.sh \
+	   testsuites/x.509/ca.pem \
+	   testsuites/x.509/ca-key.pem \
+	   testsuites/x.509/client-cert.pem \
+	   testsuites/x.509/client-key.pem \
+	   testsuites/x.509/machine-cert.pem \
+	   testsuites/x.509/machine-key.pem \
 	   testsuites/invalid.conf \
 	   testsuites/valid.conf \
 	   cfg.sh \
@@ -241,8 +265,14 @@ EXTRA_DIST= 1.rstest 2.rstest 3.rstest err1.rstest \
 	   testsuites/da-mainmsg-q.conf \
 	   diskqueue-fsync.sh \
 	   testsuites/diskqueue-fsync.conf \
+	   imtcp-tls-basic.sh \
+	   testsuites/imtcp-tls-basic.conf \
 	   imtcp-multiport.sh \
 	   testsuites/imtcp-multiport.conf \
+	   udp-msgreduc-orgmsg-vg.sh \
+	   testsuites/udp-msgreduc-orgmsg-vg.conf \
+	   udp-msgreduc-vg.sh \
+	   testsuites/udp-msgreduc-vg.conf \
 	   manytcp.sh \
 	   testsuites/manytcp.conf \
 	   manyptcp.sh \
@@ -279,6 +309,10 @@ EXTRA_DIST= 1.rstest 2.rstest 3.rstest err1.rstest \
 	   failover-basic.sh \
 	   failover-basic-vg.sh \
 	   testsuites/failover-basic.conf \
+	   failover-async.sh \
+	   testsuites/failover-async.conf \
+	   failover-double.sh \
+	   testsuites/failover-double.conf \
 	   discard-rptdmsg.sh \
 	   discard-rptdmsg-vg.sh \
 	   testsuites/discard-rptdmsg.conf \
@@ -301,6 +335,10 @@ EXTRA_DIST= 1.rstest 2.rstest 3.rstest err1.rstest \
 	   threadingmqaq.sh \
 	   testsuites/threadingmqaq.conf \
 	   sndrcv_drvr.sh \
+	   sndrcv_drvr_noexit.sh \
+	   sndrcv_failover.sh \
+	   testsuites/sndrcv_failover_sender.conf \
+	   testsuites/sndrcv_failover_rcvr.conf \
 	   sndrcv.sh \
 	   testsuites/sndrcv_sender.conf \
 	   testsuites/sndrcv_rcvr.conf \
@@ -418,6 +456,15 @@ EXTRA_DIST= 1.rstest 2.rstest 3.rstest err1.rstest \
 	   testsuites/mysql-asyn.conf \
 	   cfg.sh
 
+# TODO: re-enable
+#sndrcv_tls_anon_rebind.sh \
+#testsuites/sndrcv_tls_anon_rebind_sender.conf \
+#testsuites/sndrcv_tls_anon_rebind_rcvr.conf \
+#sndrcv_tls_anon.sh \
+#testsuites/sndrcv_tls_anon_sender.conf \
+#testsuites/sndrcv_tls_anon_rcvr.conf \
+#
+
 ourtail_SOURCES = ourtail.c
 msleep_SOURCES = msleep.c
 chkseq_SOURCES = chkseq.c
@@ -426,7 +473,11 @@ uxsockrcvr_SOURCES = uxsockrcvr.c
 uxsockrcvr_LDADD = $(SOL_LIBS)
 
 tcpflood_SOURCES = tcpflood.c
-tcpflood_LDADD = $(SOL_LIBS)
+tcpflood_CPPFLAGS = $(PTHREADS_CFLAGS) $(GNUTLS_CFLAGS)
+tcpflood_LDADD = $(SOL_LIBS) $(PTHREADS_LIBS) $(GNUTLS_LIBS)
+if ENABLE_GNUTLS
+tcpflood_LDADD += -lgcrypt
+endif
 
 syslog_caller_SOURCES = syslog_caller.c
 syslog_caller_LDADD = $(SOL_LIBS)

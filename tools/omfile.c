@@ -4,7 +4,8 @@
  * NOTE: read comments in module-template.h to understand how this file
  *       works!
  *
- * File begun on 2007-07-21 by RGerhards (extracted from syslogd.c)
+ * File begun on 2007-07-21 by RGerhards (extracted from syslogd.c, which
+ * at the time of the fork from sysklogd was under BSD license)
  *
  * A large re-write of this file was done in June, 2009. The focus was
  * to introduce many more features (like zipped writing), clean up the code
@@ -16,24 +17,23 @@
  * pipes. These have been moved to ompipe, to reduced the entanglement
  * between the two different functionalities. -- rgerhards
  *
- * Copyright 2007-2009 Rainer Gerhards and Adiscon GmbH.
+ * Copyright 2007-2012 Adiscon GmbH.
  *
  * This file is part of rsyslog.
  *
- * Rsyslog is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * Rsyslog is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with Rsyslog.  If not, see <http://www.gnu.org/licenses/>.
- *
- * A copy of the GPL can be found in the file "COPYING" in this distribution.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ * 
+ *       http://www.apache.org/licenses/LICENSE-2.0
+ *       -or-
+ *       see COPYING.ASL20 in the source distribution
+ * 
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 #include "config.h"
 #include "rsyslog.h"
@@ -71,6 +71,9 @@
 
 MODULE_TYPE_OUTPUT
 MODULE_TYPE_NOKEEP
+
+/* forward definitions */
+static rsRetVal resetConfigVariables(uchar __attribute__((unused)) *pp, void __attribute__((unused)) *pVal);
 
 /* internal structures
  */
@@ -123,26 +126,6 @@ typedef struct s_dynaFileCacheEntry dynaFileCacheEntry;
 #define FLUSHONTX_DFLT 1 	/* default for flush on TX end */
 
 #define DFLT_bForceChown 0
-/* globals for default values */
-static int iDynaFileCacheSize = 10; /* max cache for dynamic files */
-static int fCreateMode = 0644; /* mode to use when creating files */
-static int fDirCreateMode = 0700; /* mode to use when creating files */
-static int	bFailOnChown;	/* fail if chown fails? */
-static int	bForceChown = DFLT_bForceChown;	/* Force chown() on existing files? */
-static uid_t	fileUID;	/* UID to be used for newly created files */
-static uid_t	fileGID;	/* GID to be used for newly created files */
-static uid_t	dirUID;		/* UID to be used for newly created directories */
-static uid_t	dirGID;		/* GID to be used for newly created directories */
-static int	bCreateDirs = 1;/* auto-create directories for dynaFiles: 0 - no, 1 - yes */
-static int	bEnableSync = 0;/* enable syncing of files (no dash in front of pathname in conf): 0 - no, 1 - yes */
-static int	iZipLevel = 0;	/* zip compression mode (0..9 as usual) */
-static sbool	bFlushOnTXEnd = FLUSHONTX_DFLT;/* flush write buffers when transaction has ended? */
-static int64	iIOBufSize = IOBUF_DFLT_SIZE;	/* size of an io buffer */
-static int	iFlushInterval = FLUSH_INTRVL_DFLT; 	/* how often flush the output buffer on inactivity? */
-static int	bUseAsyncWriter = USE_ASYNCWRITER_DFLT;	/* should we enable asynchronous writing? */
-uchar	*pszFileDfltTplName = NULL; /* name of the default template to use */
-/* end globals for default values */
-
 
 typedef struct _instanceData {
 	uchar	f_fname[MAXFNAME];/* file or template name (display only) */
@@ -176,6 +159,35 @@ typedef struct _instanceData {
 	sbool	bUseAsyncWriter;	/* use async stream writer? */
 } instanceData;
 
+
+typedef struct configSettings_s {
+	int iDynaFileCacheSize; /* max cache for dynamic files */
+	int fCreateMode; /* mode to use when creating files */
+	int fDirCreateMode; /* mode to use when creating files */
+	int	bFailOnChown;	/* fail if chown fails? */
+	int	bForceChown;	/* Force chown() on existing files? */
+	uid_t	fileUID;	/* UID to be used for newly created files */
+	uid_t	fileGID;	/* GID to be used for newly created files */
+	uid_t	dirUID;		/* UID to be used for newly created directories */
+	uid_t	dirGID;		/* GID to be used for newly created directories */
+	int	bCreateDirs;/* auto-create directories for dynaFiles: 0 - no, 1 - yes */
+	int	bEnableSync;/* enable syncing of files (no dash in front of pathname in conf): 0 - no, 1 - yes */
+	int	iZipLevel;	/* zip compression mode (0..9 as usual) */
+	sbool	bFlushOnTXEnd;/* flush write buffers when transaction has ended? */
+	int64	iIOBufSize;	/* size of an io buffer */
+	int	iFlushInterval; 	/* how often flush the output buffer on inactivity? */
+	int	bUseAsyncWriter;	/* should we enable asynchronous writing? */
+	EMPTY_STRUCT
+} configSettings_t;
+uchar	*pszFileDfltTplName; /* name of the default template to use */
+
+SCOPING_SUPPORT; /* must be set AFTER configSettings_t is defined */
+
+BEGINinitConfVars		/* (re)set config variables to default values */
+CODESTARTinitConfVars 
+	pszFileDfltTplName = NULL; /* make sure this can be free'ed! */
+	iRet = resetConfigVariables(NULL, NULL); /* params are dummies */
+ENDinitConfVars
 
 BEGINisCompatibleWithFeature
 CODESTARTisCompatibleWithFeature
@@ -232,7 +244,7 @@ rsRetVal setDynaFileCacheSize(void __attribute__((unused)) *pVal, int iNewVal)
 		iNewVal = 1000;
 	}
 
-	iDynaFileCacheSize = iNewVal;
+	cs.iDynaFileCacheSize = iNewVal;
 	DBGPRINTF("DynaFileCacheSize changed to %d.\n", iNewVal);
 
 	RETiRet;
@@ -388,6 +400,7 @@ prepareFile(instanceData *pData, uchar *newFileName)
 	int fd;
 	DEFiRet;
 
+	pData->pStrm = NULL;
 	if(access((char*)newFileName, F_OK) == 0) {
 		if(pData->bForceChown) {
 			/* Try to fix wrong ownership set by someone else. Note that this code
@@ -458,7 +471,7 @@ prepareFile(instanceData *pData, uchar *newFileName)
 	CHKiRet(strm.SetiZipLevel(pData->pStrm, pData->iZipLevel));
 	CHKiRet(strm.SetsIOBufSize(pData->pStrm, (size_t) pData->iIOBufSize));
 	CHKiRet(strm.SettOperationsMode(pData->pStrm, STREAMMODE_WRITE_APPEND));
-	CHKiRet(strm.SettOpenMode(pData->pStrm, fCreateMode));
+	CHKiRet(strm.SettOpenMode(pData->pStrm, cs.fCreateMode));
 	CHKiRet(strm.SetbSync(pData->pStrm, pData->bSyncFile));
 	CHKiRet(strm.SetsType(pData->pStrm, pData->strmType));
 	CHKiRet(strm.SetiSizeLimit(pData->pStrm, pData->iSizeLimit));
@@ -473,6 +486,11 @@ prepareFile(instanceData *pData, uchar *newFileName)
 	CHKiRet(strm.ConstructFinalize(pData->pStrm));
 	
 finalize_it:
+	if(iRet != RS_RET_OK) {
+		if(pData->pStrm != NULL) {
+			strm.Destruct(&pData->pStrm);
+		}
+	}
 	RETiRet;
 }
 
@@ -549,7 +567,7 @@ prepareDynFile(instanceData *pData, uchar *newFileName, unsigned iMsgOpts)
 	pData->iCurrElt = -1;
 	/* similarly, we need to set the current pStrm to NULL, because otherwise, if prepareFile() fails,
 	 * we may end up using an old stream. This bug depends on how exactly prepareFile fails,
-	 * but it* could be triggered in the common case of a failed open() system call.
+	 * but it could be triggered in the common case of a failed open() system call.
 	 * rgerhards, 2010-03-22
 	 */
 	pData->pStrm = NULL;
@@ -577,16 +595,17 @@ prepareDynFile(instanceData *pData, uchar *newFileName, unsigned iMsgOpts)
 	/* Ok, we finally can open the file */
 	localRet = prepareFile(pData, newFileName); /* ignore exact error, we check fd below */
 
-	/* file is either open now or an error state set */ // RG: better check localRet?
-	if(pData->pStrm == NULL) {
+	/* check if we had an error */
+	if(localRet != RS_RET_OK) {
 		/* do not report anything if the message is an internally-generated
 		 * message. Otherwise, we could run into a never-ending loop. The bad
 		 * news is that we also lose errors on startup messages, but so it is.
 		 */
 		if(iMsgOpts & INTERNAL_MSG) {
-			DBGPRINTF("Could not open dynaFile, discarding message\n");
+			DBGPRINTF("Could not open dynaFile '%s', state %d, discarding message\n",
+				  newFileName, localRet);
 		} else {
-			errmsg.LogError(0, NO_ERRCODE, "Could not open dynamic file '%s' - discarding message", newFileName);
+			errmsg.LogError(0, localRet, "Could not open dynamic file '%s' [state %d] - discarding message", newFileName, localRet);
 		}
 		ABORT_FINALIZE(localRet);
 	}
@@ -657,8 +676,6 @@ finalize_it:
 		/* in v5, we shall return different states for message-caused failure (but only there!) */
 		if(pData->strmType == STREAMTYPE_NAMED_PIPE)
 			iRet = RS_RET_DISABLE_ACTION; /* this is the traditional semantic -- rgerhards, 2010-01-15 */
-		else
-			iRet = RS_RET_SUSPENDED;
 	}
 	RETiRet;
 }
@@ -691,7 +708,8 @@ ENDbeginTransaction
 
 BEGINendTransaction
 CODESTARTendTransaction
-	if(pData->bFlushOnTXEnd) {
+	/* Note: pStrm may be NULL if there was an error opening the stream */
+	if(pData->bFlushOnTXEnd && pData->pStrm != NULL) {
 		CHKiRet(strm.Flush(pData->pStrm));
 	}
 finalize_it:
@@ -713,6 +731,21 @@ ENDdoAction
 
 BEGINparseSelectorAct
 CODESTARTparseSelectorAct
+	/* Note: the indicator sequence permits us to use '$' to signify
+	 * outchannel, what otherwise is not possible due to truely 
+	 * unresolvable grammar conflicts (*this time no way around*).
+	 * rgerhards, 2011-07-09
+	 */
+	if(!strncmp((char*) p, ":omfile:", sizeof(":omfile:") - 1)) {
+		p += sizeof(":omfile:") - 1;
+	} else {
+		if(*p == '$') {
+			errmsg.LogError(0, RS_RET_OUTDATED_STMT,
+				"action '%s' treated as ':omfile:%s' - please "
+				"change syntax, '%s' will not be supported in "
+				"rsyslog v6 and above.", p, p, p);
+		}
+	} 
 	if(!(*p == '$' || *p == '?' || *p == '/' || *p == '.' || *p == '-'))
 		ABORT_FINALIZE(RS_RET_CONFLINE_UNPROCESSED);
 
@@ -722,7 +755,7 @@ CODESTARTparseSelectorAct
 		pData->bSyncFile = 0;
 		p++;
 	} else {
-		pData->bSyncFile = bEnableSync;
+		pData->bSyncFile = cs.bEnableSync;
 	}
 	pData->iSizeLimit = 0; /* default value, use outchannels to configure! */
 
@@ -756,7 +789,7 @@ CODESTARTparseSelectorAct
 		pData->iCurrElt = -1;		  /* no current element */
 		/* we now allocate the cache table */
 		CHKmalloc(pData->dynCache = (dynaFileCacheEntry**)
-				calloc(iDynaFileCacheSize, sizeof(dynaFileCacheEntry*)));
+				calloc(cs.iDynaFileCacheSize, sizeof(dynaFileCacheEntry*)));
 		break;
 
         /* case '|': while pipe support has been removed, I leave the code in in case we 
@@ -785,21 +818,21 @@ CODESTARTparseSelectorAct
 	}
 
 	/* freeze current paremeters for this action */
-	pData->iDynaFileCacheSize = iDynaFileCacheSize;
-	pData->fCreateMode = fCreateMode;
-	pData->fDirCreateMode = fDirCreateMode;
-	pData->bCreateDirs = bCreateDirs;
-	pData->bFailOnChown = bFailOnChown;
-	pData->bForceChown = bForceChown;
-	pData->fileUID = fileUID;
-	pData->fileGID = fileGID;
-	pData->dirUID = dirUID;
-	pData->dirGID = dirGID;
-	pData->iZipLevel = iZipLevel;
-	pData->bFlushOnTXEnd = bFlushOnTXEnd;
-	pData->iIOBufSize = (int) iIOBufSize;
-	pData->iFlushInterval = iFlushInterval;
-	pData->bUseAsyncWriter = bUseAsyncWriter;
+	pData->iDynaFileCacheSize = cs.iDynaFileCacheSize;
+	pData->fCreateMode = cs.fCreateMode;
+	pData->fDirCreateMode = cs.fDirCreateMode;
+	pData->bCreateDirs = cs.bCreateDirs;
+	pData->bFailOnChown = cs.bFailOnChown;
+	pData->bForceChown = cs.bForceChown;
+	pData->fileUID = cs.fileUID;
+	pData->fileGID = cs.fileGID;
+	pData->dirUID = cs.dirUID;
+	pData->dirGID = cs.dirGID;
+	pData->iZipLevel = cs.iZipLevel;
+	pData->bFlushOnTXEnd = cs.bFlushOnTXEnd;
+	pData->iIOBufSize = (int) cs.iIOBufSize;
+	pData->iFlushInterval = cs.iFlushInterval;
+	pData->bUseAsyncWriter = cs.bUseAsyncWriter;
 
 	if(pData->bDynamicName == 0) {
 		/* try open and emit error message if not possible. At this stage, we ignore the
@@ -809,7 +842,7 @@ CODESTARTparseSelectorAct
 		        
 	  	if(pData->pStrm == NULL) {
 			DBGPRINTF("Error opening log file: %s\n", pData->f_fname);
-			errmsg.LogError(0, RS_RET_NO_FILE_ACCESS, "Could no open output file '%s'", pData->f_fname);
+			errmsg.LogError(0, RS_RET_NO_FILE_ACCESS, "Could not open output file '%s'", pData->f_fname);
 		}
 	}
 CODE_STD_FINALIZERparseSelectorAct
@@ -821,26 +854,24 @@ ENDparseSelectorAct
  */
 static rsRetVal resetConfigVariables(uchar __attribute__((unused)) *pp, void __attribute__((unused)) *pVal)
 {
-	fileUID = -1;
-	fileGID = -1;
-	dirUID = -1;
-	dirGID = -1;
-	bFailOnChown = 1;
-	bForceChown = DFLT_bForceChown;
-	iDynaFileCacheSize = 10;
-	fCreateMode = 0644;
-	fDirCreateMode = 0700;
-	bCreateDirs = 1;
-	bEnableSync = 0;
-	iZipLevel = 0;
-	bFlushOnTXEnd = FLUSHONTX_DFLT;
-	iIOBufSize = IOBUF_DFLT_SIZE;
-	iFlushInterval = FLUSH_INTRVL_DFLT;
-	bUseAsyncWriter = USE_ASYNCWRITER_DFLT;
-	if(pszFileDfltTplName != NULL) {
-		free(pszFileDfltTplName);
-		pszFileDfltTplName = NULL;
-	}
+	cs.fileUID = -1;
+	cs.fileGID = -1;
+	cs.dirUID = -1;
+	cs.dirGID = -1;
+	cs.bFailOnChown = 1;
+	cs.bForceChown = DFLT_bForceChown;
+	cs.iDynaFileCacheSize = 10;
+	cs.fCreateMode = 0644;
+	cs.fDirCreateMode = 0700;
+	cs.bCreateDirs = 1;
+	cs.bEnableSync = 0;
+	cs.iZipLevel = 0;
+	cs.bFlushOnTXEnd = FLUSHONTX_DFLT;
+	cs.iIOBufSize = IOBUF_DFLT_SIZE;
+	cs.iFlushInterval = FLUSH_INTRVL_DFLT;
+	cs.bUseAsyncWriter = USE_ASYNCWRITER_DFLT;
+	free(pszFileDfltTplName);
+	pszFileDfltTplName = NULL;
 
 	return RS_RET_OK;
 }
@@ -880,6 +911,7 @@ BEGINmodInit(File)
 CODESTARTmodInit
 	*ipIFVersProvided = CURR_MOD_IF_VERSION; /* we only support the current interface specification */
 CODEmodInit_QueryRegCFSLineHdlr
+SCOPINGmodInit
 	CHKiRet(objUse(errmsg, CORE_COMPONENT));
 	CHKiRet(objUse(strm, CORE_COMPONENT));
 
@@ -888,21 +920,21 @@ CODEmodInit_QueryRegCFSLineHdlr
 	INITChkCoreFeature(bCoreSupportsBatching, CORE_FEATURE_BATCHING);
 	DBGPRINTF("omfile: %susing transactional output interface.\n", bCoreSupportsBatching ? "" : "not ");
 	CHKiRet(omsdRegCFSLineHdlr((uchar *)"dynafilecachesize", 0, eCmdHdlrInt, (void*) setDynaFileCacheSize, NULL, STD_LOADABLE_MODULE_ID));
-	CHKiRet(omsdRegCFSLineHdlr((uchar *)"omfileziplevel", 0, eCmdHdlrInt, NULL, &iZipLevel, STD_LOADABLE_MODULE_ID));
-	CHKiRet(omsdRegCFSLineHdlr((uchar *)"omfileflushinterval", 0, eCmdHdlrInt, NULL, &iFlushInterval, STD_LOADABLE_MODULE_ID));
-	CHKiRet(omsdRegCFSLineHdlr((uchar *)"omfileasyncwriting", 0, eCmdHdlrBinary, NULL, &bUseAsyncWriter, STD_LOADABLE_MODULE_ID));
-	CHKiRet(omsdRegCFSLineHdlr((uchar *)"omfileflushontxend", 0, eCmdHdlrBinary, NULL, &bFlushOnTXEnd, STD_LOADABLE_MODULE_ID));
-	CHKiRet(omsdRegCFSLineHdlr((uchar *)"omfileiobuffersize", 0, eCmdHdlrSize, NULL, &iIOBufSize, STD_LOADABLE_MODULE_ID));
-	CHKiRet(omsdRegCFSLineHdlr((uchar *)"dirowner", 0, eCmdHdlrUID, NULL, &dirUID, STD_LOADABLE_MODULE_ID));
-	CHKiRet(omsdRegCFSLineHdlr((uchar *)"dirgroup", 0, eCmdHdlrGID, NULL, &dirGID, STD_LOADABLE_MODULE_ID));
-	CHKiRet(omsdRegCFSLineHdlr((uchar *)"fileowner", 0, eCmdHdlrUID, NULL, &fileUID, STD_LOADABLE_MODULE_ID));
-	CHKiRet(omsdRegCFSLineHdlr((uchar *)"filegroup", 0, eCmdHdlrGID, NULL, &fileGID, STD_LOADABLE_MODULE_ID));
-	CHKiRet(omsdRegCFSLineHdlr((uchar *)"dircreatemode", 0, eCmdHdlrFileCreateMode, NULL, &fDirCreateMode, STD_LOADABLE_MODULE_ID));
-	CHKiRet(omsdRegCFSLineHdlr((uchar *)"filecreatemode", 0, eCmdHdlrFileCreateMode, NULL, &fCreateMode, STD_LOADABLE_MODULE_ID));
-	CHKiRet(omsdRegCFSLineHdlr((uchar *)"createdirs", 0, eCmdHdlrBinary, NULL, &bCreateDirs, STD_LOADABLE_MODULE_ID));
-	CHKiRet(omsdRegCFSLineHdlr((uchar *)"failonchownfailure", 0, eCmdHdlrBinary, NULL, &bFailOnChown, STD_LOADABLE_MODULE_ID));
-	CHKiRet(omsdRegCFSLineHdlr((uchar *)"omfileForceChown", 0, eCmdHdlrBinary, NULL, &bForceChown, STD_LOADABLE_MODULE_ID));
-	CHKiRet(omsdRegCFSLineHdlr((uchar *)"actionfileenablesync", 0, eCmdHdlrBinary, NULL, &bEnableSync, STD_LOADABLE_MODULE_ID));
+	CHKiRet(omsdRegCFSLineHdlr((uchar *)"omfileziplevel", 0, eCmdHdlrInt, NULL, &cs.iZipLevel, STD_LOADABLE_MODULE_ID));
+	CHKiRet(omsdRegCFSLineHdlr((uchar *)"omfileflushinterval", 0, eCmdHdlrInt, NULL, &cs.iFlushInterval, STD_LOADABLE_MODULE_ID));
+	CHKiRet(omsdRegCFSLineHdlr((uchar *)"omfileasyncwriting", 0, eCmdHdlrBinary, NULL, &cs.bUseAsyncWriter, STD_LOADABLE_MODULE_ID));
+	CHKiRet(omsdRegCFSLineHdlr((uchar *)"omfileflushontxend", 0, eCmdHdlrBinary, NULL, &cs.bFlushOnTXEnd, STD_LOADABLE_MODULE_ID));
+	CHKiRet(omsdRegCFSLineHdlr((uchar *)"omfileiobuffersize", 0, eCmdHdlrSize, NULL, &cs.iIOBufSize, STD_LOADABLE_MODULE_ID));
+	CHKiRet(omsdRegCFSLineHdlr((uchar *)"dirowner", 0, eCmdHdlrUID, NULL, &cs.dirUID, STD_LOADABLE_MODULE_ID));
+	CHKiRet(omsdRegCFSLineHdlr((uchar *)"dirgroup", 0, eCmdHdlrGID, NULL, &cs.dirGID, STD_LOADABLE_MODULE_ID));
+	CHKiRet(omsdRegCFSLineHdlr((uchar *)"fileowner", 0, eCmdHdlrUID, NULL, &cs.fileUID, STD_LOADABLE_MODULE_ID));
+	CHKiRet(omsdRegCFSLineHdlr((uchar *)"filegroup", 0, eCmdHdlrGID, NULL, &cs.fileGID, STD_LOADABLE_MODULE_ID));
+	CHKiRet(omsdRegCFSLineHdlr((uchar *)"dircreatemode", 0, eCmdHdlrFileCreateMode, NULL, &cs.fDirCreateMode, STD_LOADABLE_MODULE_ID));
+	CHKiRet(omsdRegCFSLineHdlr((uchar *)"filecreatemode", 0, eCmdHdlrFileCreateMode, NULL, &cs.fCreateMode, STD_LOADABLE_MODULE_ID));
+	CHKiRet(omsdRegCFSLineHdlr((uchar *)"createdirs", 0, eCmdHdlrBinary, NULL, &cs.bCreateDirs, STD_LOADABLE_MODULE_ID));
+	CHKiRet(omsdRegCFSLineHdlr((uchar *)"failonchownfailure", 0, eCmdHdlrBinary, NULL, &cs.bFailOnChown, STD_LOADABLE_MODULE_ID));
+	CHKiRet(omsdRegCFSLineHdlr((uchar *)"omfileForceChown", 0, eCmdHdlrBinary, NULL, &cs.bForceChown, STD_LOADABLE_MODULE_ID));
+	CHKiRet(omsdRegCFSLineHdlr((uchar *)"actionfileenablesync", 0, eCmdHdlrBinary, NULL, &cs.bEnableSync, STD_LOADABLE_MODULE_ID));
 	CHKiRet(regCfSysLineHdlr((uchar *)"actionfiledefaulttemplate", 0, eCmdHdlrGetWord, NULL, &pszFileDfltTplName, NULL));
 	CHKiRet(omsdRegCFSLineHdlr((uchar *)"resetconfigvariables", 1, eCmdHdlrCustomHandler, resetConfigVariables, NULL, STD_LOADABLE_MODULE_ID));
 ENDmodInit

@@ -4,25 +4,23 @@
  *
  * Module begun 2009-06-10 by Rainer Gerhards
  *
- * Copyright 2009 Rainer Gerhards and Adiscon GmbH.
+ * Copyright 2009-2012 Adiscon GmbH.
  *
  * This file is part of the rsyslog runtime library.
  *
- * The rsyslog runtime library is free software: you can redistribute it and/or modify
- * it under the terms of the GNU Lesser General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * The rsyslog runtime library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * along with the rsyslog runtime library.  If not, see <http://www.gnu.org/licenses/>.
- *
- * A copy of the GPL can be found in the file "COPYING" in this distribution.
- * A copy of the LGPL can be found in the file "COPYING.LESSER" in this distribution.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ * 
+ *       http://www.apache.org/licenses/LICENSE-2.0
+ *       -or-
+ *       see COPYING.ASL20 in the source distribution
+ * 
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 #include "config.h"
@@ -69,6 +67,12 @@ getFIOPName(unsigned iFIOP)
 			break;
 		case FIOP_REGEX:
 			pRet = "regex";
+			break;
+		case FIOP_EREREGEX:
+			pRet = "ereregex";
+			break;
+		case FIOP_ISEMPTY:
+			pRet = "isempty";
 			break;
 		default:
 			pRet = "NOP";
@@ -190,13 +194,18 @@ shouldProcessThisMessage(rule_t *pRule, msg_t *pMsg, sbool *bProcessMsg)
 		bRet = (pResult->val.num) ? 1 : 0;
 	} else {
 		assert(pRule->f_filter_type == FILTER_PROP); /* assert() just in case... */
-		pszPropVal = MsgGetProp(pMsg, NULL, pRule->f_filterData.prop.propID, &propLen, &pbMustBeFreed);
+		pszPropVal = MsgGetProp(pMsg, NULL, pRule->f_filterData.prop.propID,
+					pRule->f_filterData.prop.propName, &propLen, &pbMustBeFreed);
 
 		/* Now do the compares (short list currently ;)) */
 		switch(pRule->f_filterData.prop.operation ) {
 		case FIOP_CONTAINS:
 			if(rsCStrLocateInSzStr(pRule->f_filterData.prop.pCSCompValue, (uchar*) pszPropVal) != -1)
 				bRet = 1;
+			break;
+		case FIOP_ISEMPTY:
+			if(propLen == 0)
+				bRet = 1; /* process message! */
 			break;
 		case FIOP_ISEQUAL:
 			if(rsCStrSzStrCmp(pRule->f_filterData.prop.pCSCompValue,
@@ -230,14 +239,28 @@ shouldProcessThisMessage(rule_t *pRule, msg_t *pMsg, sbool *bProcessMsg)
 			bRet = (bRet == 1) ?  0 : 1;
 
 		if(Debug) {
-			dbgprintf("Filter: check for property '%s' (value '%s') ",
-			        propIDToName(pRule->f_filterData.prop.propID), pszPropVal);
+			char *cstr;
+			if(pRule->f_filterData.prop.propID == PROP_CEE) {
+				cstr = es_str2cstr(pRule->f_filterData.prop.propName, NULL);
+				dbgprintf("Filter: check for CEE property '%s' (value '%s') ",
+					cstr, pszPropVal);
+				free(cstr);
+			} else {
+				dbgprintf("Filter: check for property '%s' (value '%s') ",
+					propIDToName(pRule->f_filterData.prop.propID), pszPropVal);
+			}
 			if(pRule->f_filterData.prop.isNegated)
 				dbgprintf("NOT ");
-			dbgprintf("%s '%s': %s\n",
-			       getFIOPName(pRule->f_filterData.prop.operation),
-			       rsCStrGetSzStrNoNULL(pRule->f_filterData.prop.pCSCompValue),
-			       bRet ? "TRUE" : "FALSE");
+			if(pRule->f_filterData.prop.operation == FIOP_ISEMPTY) {
+				dbgprintf("%s : %s\n",
+				       getFIOPName(pRule->f_filterData.prop.operation),
+				       bRet ? "TRUE" : "FALSE");
+			} else {
+				dbgprintf("%s '%s': %s\n",
+				       getFIOPName(pRule->f_filterData.prop.operation),
+				       rsCStrGetSzStrNoNULL(pRule->f_filterData.prop.pCSCompValue),
+				       bRet ? "TRUE" : "FALSE");
+			}
 		}
 
 		/* cleanup */
@@ -266,6 +289,7 @@ static rsRetVal
 processBatch(rule_t *pThis, batch_t *pBatch)
 {
 	int i;
+	rsRetVal localRet;
 	DEFiRet;
 
 	ISOBJ_TYPE_assert(pThis, rule);
@@ -273,9 +297,13 @@ processBatch(rule_t *pThis, batch_t *pBatch)
 
 	/* first check the filters and reset status variables */
 	for(i = 0 ; i < batchNumMsgs(pBatch) && !*(pBatch->pbShutdownImmediate) ; ++i) {
-		CHKiRet(shouldProcessThisMessage(pThis, (msg_t*)(pBatch->pElem[i].pUsrp),
-						 &(pBatch->pElem[i].bFilterOK)));
-		// TODO: really abort on error? 2010-06-10
+		localRet = shouldProcessThisMessage(pThis, (msg_t*)(pBatch->pElem[i].pUsrp),
+						    &(pBatch->pElem[i].bFilterOK));
+		if(localRet != RS_RET_OK) {
+			DBGPRINTF("processBatch: iRet %d returned from shouldProcessThisMessage, "
+			          "ignoring message\n", localRet);
+			pBatch->pElem[i].bFilterOK = 0;
+		}
 		if(pBatch->pElem[i].bFilterOK) {
 			/* re-init only when actually needed (cache write cost!) */
 			pBatch->pElem[i].bPrevWasSuspended = 0;
@@ -324,6 +352,8 @@ CODESTARTobjDestruct(rule)
 			rsCStrDestruct(&pThis->f_filterData.prop.pCSCompValue);
 		if(pThis->f_filterData.prop.regex_cache != NULL)
 			rsCStrRegexDestruct(&pThis->f_filterData.prop.regex_cache);
+		if(pThis->f_filterData.prop.propName != NULL)
+			es_deleteStr(pThis->f_filterData.prop.propName);
 	} else if(pThis->f_filter_type == FILTER_EXPR) {
 		if(pThis->f_filterData.f_expr != NULL)
 			expr.Destruct(&pThis->f_filterData.f_expr);
@@ -368,6 +398,7 @@ DEFFUNC_llExecFunc(dbgPrintInitInfoAction)
 /* debugprint for the rule object */
 BEGINobjDebugPrint(rule) /* be sure to specify the object type also in END and CODESTART macros! */
 	int i;
+	char *cstr;
 CODESTARTobjDebugPrint(rule)
 	dbgoprint((obj_t*) pThis, "rsyslog rule:\n");
 	if(pThis->pCSProgNameComp != NULL)
@@ -388,12 +419,19 @@ CODESTARTobjDebugPrint(rule)
 	} else {
 		dbgprintf("PROPERTY-BASED Filter:\n");
 		dbgprintf("\tProperty.: '%s'\n", propIDToName(pThis->f_filterData.prop.propID));
+		if(pThis->f_filterData.prop.propName != NULL) {
+			cstr = es_str2cstr(pThis->f_filterData.prop.propName, NULL);
+			dbgprintf("\tCEE-Prop.: '%s'\n", cstr);
+			free(cstr);
+		}
 		dbgprintf("\tOperation: ");
 		if(pThis->f_filterData.prop.isNegated)
 			dbgprintf("NOT ");
 		dbgprintf("'%s'\n", getFIOPName(pThis->f_filterData.prop.operation));
-		dbgprintf("\tValue....: '%s'\n",
-		       rsCStrGetSzStrNoNULL(pThis->f_filterData.prop.pCSCompValue));
+		if(pThis->f_filterData.prop.pCSCompValue != NULL) {
+			dbgprintf("\tValue....: '%s'\n",
+			       rsCStrGetSzStrNoNULL(pThis->f_filterData.prop.pCSCompValue));
+		}
 		dbgprintf("\tAction...: ");
 	}
 

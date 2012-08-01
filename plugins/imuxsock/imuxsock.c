@@ -6,7 +6,7 @@
  *
  * File begun on 2007-12-20 by RGerhards (extracted from syslogd.c)
  *
- * Copyright 2007-2010 Rainer Gerhards and Adiscon GmbH.
+ * Copyright 2007-2011 Rainer Gerhards and Adiscon GmbH.
  *
  * This file is part of rsyslog.
  *
@@ -66,6 +66,12 @@ MODULE_TYPE_NOKEEP
 #else
 #define _PATH_LOG	"/dev/log"
 #endif
+#endif
+#ifndef SYSTEMD_JOURNAL
+#define SYSTEMD_JOURNAL  "/run/systemd/journal"
+#endif
+#ifndef SYSTEMD_PATH_LOG
+#define SYSTEMD_PATH_LOG SYSTEMD_JOURNAL "/syslog"
 #endif
 
 /* emulate struct ucred for platforms that do not have it */
@@ -275,16 +281,16 @@ addLstnSocketName(void __attribute__((unused)) *pVal, uchar *pNewVal)
 		} else {
 			listeners[nfd].bParseHost = 0;
 		}
-		CHKiRet(prop.Construct(&(listeners[nfd].hostName)));
 		if(pLogHostName == NULL) {
-			CHKiRet(prop.SetString(listeners[nfd].hostName, glbl.GetLocalHostName(), ustrlen(glbl.GetLocalHostName())));
+			listeners[nfd].hostName = NULL;
 		} else {
+			CHKiRet(prop.Construct(&(listeners[nfd].hostName)));
 			CHKiRet(prop.SetString(listeners[nfd].hostName, pLogHostName, ustrlen(pLogHostName)));
+			CHKiRet(prop.ConstructFinalize(listeners[nfd].hostName));
 			/* reset hostname for next socket */
 			free(pLogHostName);
 			pLogHostName = NULL;
 		}
-		CHKiRet(prop.ConstructFinalize(listeners[nfd].hostName));
 		if(ratelimitInterval > 0) {
 			if((listeners[nfd].ht = create_hashtable(100, hash_from_key_fn, key_equals_fn, NULL)) == NULL) {
 				/* in this case, we simply turn of rate-limiting */
@@ -355,7 +361,7 @@ createLogSocket(lstn_t *pLstn)
 	pLstn->fd = socket(AF_UNIX, SOCK_DGRAM, 0);
 	if(pLstn->fd < 0 || bind(pLstn->fd, (struct sockaddr *) &sunx, SUN_LEN(&sunx)) < 0 ||
 	    chmod((char*)pLstn->sockName, 0666) < 0) {
-		errmsg.LogError(errno, NO_ERRCODE, "connot create '%s'", pLstn->sockName);
+		errmsg.LogError(errno, NO_ERRCODE, "cannot create '%s'", pLstn->sockName);
 		dbgprintf("cannot create %s (%d).\n", pLstn->sockName, errno);
 		close(pLstn->fd);
 		pLstn->fd = -1;
@@ -564,14 +570,22 @@ SubmitMsg(uchar *pRcv, int lenRcv, lstn_t *pLstn, struct ucred *cred)
 
 	parse++; lenMsg--; /* '>' */
 
-	if(datetime.ParseTIMESTAMP3164(&(pMsg->tTIMESTAMP), &parse, &lenMsg) != RS_RET_OK) {
-		DBGPRINTF("we have a problem, invalid timestamp in msg!\n");
+	if((pLstn->flags & IGNDATE)) {
+		/* in this case, we still need to find out if we have a valid
+		 * datestamp or not .. and advance the parse pointer accordingly.
+		 */
+		struct syslogTime dummy;
+		datetime.ParseTIMESTAMP3164(&dummy, &parse, &lenMsg);
+	} else {
+		if(datetime.ParseTIMESTAMP3164(&(pMsg->tTIMESTAMP), &parse, &lenMsg) != RS_RET_OK) {
+			DBGPRINTF("we have a problem, invalid timestamp in msg!\n");
+		}
 	}
 
 	/* pull tag */
 
 	i = 0;
-	while(lenMsg > 0 && *parse != ' ' && i < CONF_TAG_MAXSIZE) {
+	while(lenMsg > 0 && *parse != ' ' && i < CONF_TAG_MAXSIZE - 1) {
 		bufParseTAG[i++] = *parse++;
 		--lenMsg;
 	}
@@ -588,7 +602,7 @@ SubmitMsg(uchar *pRcv, int lenRcv, lstn_t *pLstn, struct ucred *cred)
 		pMsg->msgFlags  = pLstn->flags;
 	}
 
-	MsgSetRcvFrom(pMsg, pLstn->hostName);
+	MsgSetRcvFrom(pMsg, pLstn->hostName == NULL ? glbl.GetLocalHostNameProp() : pLstn->hostName);
 	CHKiRet(MsgSetRcvFromIP(pMsg, pLocalHostIP));
 	CHKiRet(submitMsg(pMsg));
 
@@ -767,6 +781,12 @@ CODESTARTwillRun
 #	endif
 	if(pLogSockName != NULL)
 		listeners[0].sockName = pLogSockName;
+	else if(sd_booted()) {
+		struct stat st;
+		if(stat(SYSTEMD_JOURNAL, &st) != -1 && S_ISDIR(st.st_mode)) {
+			listeners[0].sockName = (uchar*) SYSTEMD_PATH_LOG;
+		}
+	}
 	if(ratelimitIntervalSysSock > 0) {
 		if((listeners[0].ht = create_hashtable(100, hash_from_key_fn, key_equals_fn, NULL)) == NULL) {
 			/* in this case, we simply turn of rate-limiting */
@@ -844,7 +864,6 @@ CODESTARTafterRun
 
 	if(pInputName != NULL)
 		prop.Destruct(&pInputName);
-
 ENDafterRun
 
 
@@ -938,11 +957,6 @@ CODEmodInit_QueryRegCFSLineHdlr
 	CHKiRet(prop.SetString(pLocalHostIP, UCHAR_CONSTANT("127.0.0.1"), sizeof("127.0.0.1") - 1));
 	CHKiRet(prop.ConstructFinalize(pLocalHostIP));
 
-	/* now init listen socket zero, the local log socket */
-	CHKiRet(prop.Construct(&(listeners[0].hostName)));
-	CHKiRet(prop.SetString(listeners[0].hostName, glbl.GetLocalHostName(), ustrlen(glbl.GetLocalHostName())));
-	CHKiRet(prop.ConstructFinalize(listeners[0].hostName));
-
 	/* register config file handlers */
 	CHKiRet(omsdRegCFSLineHdlr((uchar *)"omitlocallogging", 0, eCmdHdlrBinary,
 		NULL, &bOmitLocalLogging, STD_LOADABLE_MODULE_ID));
@@ -956,10 +970,10 @@ CODEmodInit_QueryRegCFSLineHdlr
 		NULL, &bUseFlowCtl, STD_LOADABLE_MODULE_ID));
 	CHKiRet(omsdRegCFSLineHdlr((uchar *)"inputunixlistensocketcreatepath", 0, eCmdHdlrBinary,
 		NULL, &bCreatePath, STD_LOADABLE_MODULE_ID));
-	CHKiRet(omsdRegCFSLineHdlr((uchar *)"inputunixlistensocketusepidfromsystem", 0, eCmdHdlrBinary,
-		NULL, &bWritePid, STD_LOADABLE_MODULE_ID));
 	CHKiRet(omsdRegCFSLineHdlr((uchar *)"addunixlistensocket", 0, eCmdHdlrGetWord,
 		addLstnSocketName, NULL, STD_LOADABLE_MODULE_ID));
+	CHKiRet(omsdRegCFSLineHdlr((uchar *)"inputunixlistensocketusepidfromsystem", 0, eCmdHdlrBinary,
+		NULL, &bWritePid, STD_LOADABLE_MODULE_ID));
 	CHKiRet(omsdRegCFSLineHdlr((uchar *)"imuxsockratelimitinterval", 0, eCmdHdlrInt,
 		NULL, &ratelimitInterval, STD_LOADABLE_MODULE_ID));
 	CHKiRet(omsdRegCFSLineHdlr((uchar *)"imuxsockratelimitburst", 0, eCmdHdlrInt,
@@ -990,10 +1004,13 @@ CODEmodInit_QueryRegCFSLineHdlr
 	/* support statistics gathering */
 	CHKiRet(statsobj.Construct(&modStats));
 	CHKiRet(statsobj.SetName(modStats, UCHAR_CONSTANT("imuxsock")));
+	STATSCOUNTER_INIT(ctrSubmit, mutCtrSubmit);
 	CHKiRet(statsobj.AddCounter(modStats, UCHAR_CONSTANT("submitted"),
 		ctrType_IntCtr, &ctrSubmit));
+	STATSCOUNTER_INIT(ctrLostRatelimit, mutCtrLostRatelimit);
 	CHKiRet(statsobj.AddCounter(modStats, UCHAR_CONSTANT("ratelimit.discarded"),
 		ctrType_IntCtr, &ctrLostRatelimit));
+	STATSCOUNTER_INIT(ctrNumRatelimiters, mutCtrNumRatelimiters);
 	CHKiRet(statsobj.AddCounter(modStats, UCHAR_CONSTANT("ratelimit.numratelimiters"),
 		ctrType_IntCtr, &ctrNumRatelimiters));
 	CHKiRet(statsobj.ConstructFinalize(modStats));

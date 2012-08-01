@@ -88,6 +88,15 @@ static rsRetVal qqueueMultiEnqObjDirect(qqueue_t *pThis, multi_submit_t *pMultiS
 #define QUEUE_CHECKPOINT	1
 #define QUEUE_NO_CHECKPOINT	0
 
+/* debug aid */
+static void displayBatchState(batch_t *pBatch)
+{
+	int i;
+	for(i = 0 ; i < pBatch->nElem ; ++i) {
+		dbgprintf("XXXXX: displayBatchState %p[%d]: %d\n", pBatch, i, pBatch->pElem[i].state);
+	}
+}
+
 /***********************************************************************
  * we need a private data structure, the "to-delete" list. As C does
  * not provide any partly private data structures, we implement this
@@ -1678,6 +1687,7 @@ static rsRetVal
 ConsumerReg(qqueue_t *pThis, wti_t *pWti)
 {
 	int iCancelStateSave;
+	int bNeedReLock = 0;	/**< do we need to lock the mutex again? */
 	DEFiRet;
 
 	ISOBJ_TYPE_assert(pThis, qqueue);
@@ -1687,6 +1697,7 @@ ConsumerReg(qqueue_t *pThis, wti_t *pWti)
 
 	/* we now have a non-idle batch of work, so we can release the queue mutex and process it */
 	d_pthread_mutex_unlock(pThis->mut);
+	bNeedReLock = 1;
 
 	/* at this spot, we may be cancelled */
 	pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, &iCancelStateSave);
@@ -1704,14 +1715,16 @@ ConsumerReg(qqueue_t *pThis, wti_t *pWti)
 	}
 
 	/* but now cancellation is no longer permitted */
-	pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &iCancelStateSave);
-
-	/* now we are done, but need to re-aquire the mutex */
-	d_pthread_mutex_lock(pThis->mut);
+	pthread_setcancelstate(iCancelStateSave, NULL);
 
 finalize_it:
-	dbgprintf("regular consumer finished, iret=%d, szlog %d sz phys %d\n", iRet,
+	DBGPRINTF("regular consumer finished, iret=%d, szlog %d sz phys %d\n", iRet,
 	          getLogicalQueueSize(pThis), getPhysicalQueueSize(pThis));
+
+	/* now we are done, but potentially need to re-aquire the mutex */
+	if(bNeedReLock)
+		d_pthread_mutex_lock(pThis->mut);
+
 	RETiRet;
 }
 
@@ -1755,7 +1768,7 @@ ConsumerDA(qqueue_t *pThis, wti_t *pWti)
 	}
 
 	/* but now cancellation is no longer permitted */
-	pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &iCancelStateSave);
+	pthread_setcancelstate(iCancelStateSave, NULL);
 
 	/* now we are done, but need to re-aquire the mutex */
 	d_pthread_mutex_lock(pThis->mut);
@@ -1774,7 +1787,8 @@ qqueueChkStopWrkrDA(qqueue_t *pThis)
 {
 	DEFiRet;
 
-//DBGPRINTF("XXXX: chkStopWrkrDA called, low watermark %d, phys Size %d\n", pThis->iLowWtrMrk, getPhysicalQueueSize(pThis));
+	/*DBGPRINTF("XXXX: chkStopWrkrDA called, low watermark %d, log Size %d, phys Size %d, bEnqOnly %d\n",
+	pThis->iLowWtrMrk, getLogicalQueueSize(pThis), getPhysicalQueueSize(pThis), pThis->bEnqOnly);*/
 	if(pThis->bEnqOnly) {
 		iRet = RS_RET_TERMINATE_WHEN_IDLE;
 	}
@@ -1795,6 +1809,8 @@ static rsRetVal
 ChkStopWrkrReg(qqueue_t *pThis)
 {
 	DEFiRet;
+	/*DBGPRINTF("XXXX: chkStopWrkrReg called, low watermark %d, log Size %d, phys Size %d, bEnqOnly %d\n",
+	pThis->iLowWtrMrk, getLogicalQueueSize(pThis), getPhysicalQueueSize(pThis), pThis->bEnqOnly);*/
 	if(pThis->bEnqOnly) {
 		iRet = RS_RET_TERMINATE_NOW;
 	} else if(pThis->pqParent != NULL) {
@@ -1912,6 +1928,8 @@ qqueueStart(qqueue_t *pThis) /* this is the ConstructionFinalizer */
 	qName = obj.GetName((obj_t*)pThis);
 	CHKiRet(statsobj.Construct(&pThis->statsobj));
 	CHKiRet(statsobj.SetName(pThis->statsobj, qName));
+	/* we need to save the queue size, as the stats module initializes it to 0! */
+	/* iQueueSize is a dual-use counter: no init, no mutex! */
 	CHKiRet(statsobj.AddCounter(pThis->statsobj, UCHAR_CONSTANT("size"),
 		ctrType_Int, &pThis->iQueueSize));
 
@@ -1923,7 +1941,7 @@ qqueueStart(qqueue_t *pThis) /* this is the ConstructionFinalizer */
 	CHKiRet(statsobj.AddCounter(pThis->statsobj, UCHAR_CONSTANT("full"),
 		ctrType_IntCtr, &pThis->ctrFull));
 
-	pThis->ctrMaxqsize = 0;
+	pThis->ctrMaxqsize = 0; /* no mutex needed, thus no init call */
 	CHKiRet(statsobj.AddCounter(pThis->statsobj, UCHAR_CONSTANT("maxqsize"),
 		ctrType_Int, &pThis->ctrMaxqsize));
 
@@ -1999,13 +2017,16 @@ static rsRetVal qqueuePersist(qqueue_t *pThis, int bIsCheckpoint)
 	CHKiRet(obj.EndSerialize(psQIF));
 
 	/* now persist the stream info */
-	CHKiRet(strm.Serialize(pThis->tVars.disk.pWrite, psQIF));
-	CHKiRet(strm.Serialize(pThis->tVars.disk.pReadDel, psQIF));
+	if(pThis->tVars.disk.pWrite != NULL)
+		CHKiRet(strm.Serialize(pThis->tVars.disk.pWrite, psQIF));
+	if(pThis->tVars.disk.pReadDel != NULL)
+		CHKiRet(strm.Serialize(pThis->tVars.disk.pReadDel, psQIF));
 	
 	/* tell the input file object that it must not delete the file on close if the queue
 	 * is non-empty - but only if we are not during a simple checkpoint
 	 */
-	if(bIsCheckpoint != QUEUE_CHECKPOINT) {
+	if(bIsCheckpoint != QUEUE_CHECKPOINT
+	   && pThis->tVars.disk.pReadDel != NULL) {
 		CHKiRet(strm.SetbDeleteOnClose(pThis->tVars.disk.pReadDel, 0));
 	}
 
@@ -2097,7 +2118,8 @@ CODESTARTobjDestruct(qqueue)
 	 * direct queue - because in both cases we have none... ;)
 	 * with a child! -- rgerhards, 2008-01-28
 	 */
-	if(pThis->qType != QUEUETYPE_DIRECT && !pThis->bEnqOnly && pThis->pqParent == NULL)
+	if(pThis->qType != QUEUETYPE_DIRECT && !pThis->bEnqOnly && pThis->pqParent == NULL
+	   && pThis->pWtpReg != NULL)
 		ShutdownWorkers(pThis);
 
 	if(pThis->bIsDA && getPhysicalQueueSize(pThis) > 0 && pThis->bSaveOnShutdown) {
@@ -2222,6 +2244,7 @@ static inline rsRetVal
 doEnqSingleObj(qqueue_t *pThis, flowControl_t flowCtlType, void *pUsr)
 {
 	DEFiRet;
+	int err;
 	struct timespec t;
 
 	STATSCOUNTER_INC(pThis->ctrEnqueued, pThis->mutCtrEnqueued);
@@ -2250,15 +2273,45 @@ doEnqSingleObj(qqueue_t *pThis, flowControl_t flowCtlType, void *pUsr)
 	 * It's a side effect, but a good one ;) -- rgerhards, 2008-03-14
 	 */
 	if(flowCtlType == eFLOWCTL_FULL_DELAY) {
-		while(pThis->iQueueSize >= pThis->iFullDlyMrk) {
-			DBGOPRINT((obj_t*) pThis, "enqueueMsg: FullDelay mark reached for full delayable message - blocking.\n");
-			pthread_cond_wait(&pThis->belowFullDlyWtrMrk, pThis->mut); /* TODO error check? But what do then? */
+		while(pThis->iQueueSize >= pThis->iFullDlyMrk&& ! glbl.GetGlobalInputTermState()) {
+			/* We have a problem during shutdown if we block eternally. In that
+			 * case, the the input thread cannot be terminated. So we wake up
+			 * from time to time to check for termination.
+			 * TODO/v6(at earliest): check if we could signal the condition during
+			 * shutdown. However, this requires new queue registries and thus is
+			 * far to much change for a stable version (and I am still not sure it
+			 * is worth the effort, given how seldom this situation occurs and how
+			 * few resources the wakeups need). -- rgerhards, 2012-05-03
+			 * In any case, this was the old code (if we do the TODO):
+			 * pthread_cond_wait(&pThis->belowFullDlyWtrMrk, pThis->mut);
+			 */
+			DBGOPRINT((obj_t*) pThis, "enqueueMsg: FullDelay mark reached for full delayable message "
+				   "- blocking, queue size is %d.\n", pThis->iQueueSize);
+			timeoutComp(&t, 1000);
+			err = pthread_cond_timedwait(&pThis->belowLightDlyWtrMrk, pThis->mut, &t);
+			if(err != 0 && err != ETIMEDOUT) {
+				/* Something is really wrong now. Report to debug log and abort the
+				 * wait. That keeps us running, even though we may lose messages.
+				 */
+				DBGOPRINT((obj_t*) pThis, "potential program bug: pthread_cond_timedwait()"
+				          "/fulldelay returned %d\n", err);
+				break;
+				
+			}
+			DBGPRINTF("wti worker in full delay timed out, checking termination...\n");
 		}
-	} else if(flowCtlType == eFLOWCTL_LIGHT_DELAY) {
+	} else if(flowCtlType == eFLOWCTL_LIGHT_DELAY && !glbl.GetGlobalInputTermState()) {
 		if(pThis->iQueueSize >= pThis->iLightDlyMrk) {
-			DBGOPRINT((obj_t*) pThis, "enqueueMsg: LightDelay mark reached for light delayable message - blocking a bit.\n");
+			DBGOPRINT((obj_t*) pThis, "enqueueMsg: LightDelay mark reached for light "
+			          "delayable message - blocking a bit.\n");
 			timeoutComp(&t, 1000); /* 1000 millisconds = 1 second TODO: make configurable */
-			pthread_cond_timedwait(&pThis->belowLightDlyWtrMrk, pThis->mut, &t); /* TODO error check? But what do then? */
+			err = pthread_cond_timedwait(&pThis->belowLightDlyWtrMrk, pThis->mut, &t);
+			if(err != 0 && err != ETIMEDOUT) {
+				/* Something is really wrong now. Report to debug log */
+				DBGOPRINT((obj_t*) pThis, "potential program bug: pthread_cond_timedwait()"
+				          "/lightdelay returned %d\n", err);
+				
+			}
 		}
 	}
 
@@ -2270,16 +2323,25 @@ doEnqSingleObj(qqueue_t *pThis, flowControl_t flowCtlType, void *pUsr)
 	while(   (pThis->iMaxQueueSize > 0 && pThis->iQueueSize >= pThis->iMaxQueueSize)
 	      || (pThis->qType == QUEUETYPE_DISK && pThis->sizeOnDiskMax != 0
 	      	  && pThis->tVars.disk.sizeOnDisk > pThis->sizeOnDiskMax)) {
-		DBGOPRINT((obj_t*) pThis, "enqueueMsg: queue FULL - waiting to drain.\n");
-		timeoutComp(&t, pThis->toEnq);
 		STATSCOUNTER_INC(pThis->ctrFull, pThis->mutCtrFull);
-// TODO : handle enqOnly => discard!
-		if(pthread_cond_timedwait(&pThis->notFull, pThis->mut, &t) != 0) {
-			DBGOPRINT((obj_t*) pThis, "enqueueMsg: cond timeout, dropping message!\n");
+		if(pThis->toEnq == 0 || pThis->bEnqOnly) {
+			DBGOPRINT((obj_t*) pThis, "enqueueMsg: queue FULL - configured for immediate discarding.\n");
 			objDestruct(pUsr);
 			ABORT_FINALIZE(RS_RET_QUEUE_FULL);
-		}
+		} else {
+			DBGOPRINT((obj_t*) pThis, "enqueueMsg: queue FULL - waiting %dms to drain.\n", pThis->toEnq);
+			if(glbl.GetGlobalInputTermState()) {
+				DBGOPRINT((obj_t*) pThis, "enqueueMsg: queue FULL, discard due to FORCE_TERM.\n");
+				ABORT_FINALIZE(RS_RET_FORCE_TERM);
+			}
+			timeoutComp(&t, pThis->toEnq);
+			if(pthread_cond_timedwait(&pThis->notFull, pThis->mut, &t) != 0) {
+				DBGOPRINT((obj_t*) pThis, "enqueueMsg: cond timeout, dropping message!\n");
+				objDestruct(pUsr);
+				ABORT_FINALIZE(RS_RET_QUEUE_FULL);
+			}
 		dbgoprint((obj_t*) pThis, "enqueueMsg: wait solved queue full condition, enqueing\n");
+		}
 	}
 
 	/* and finally enqueue the message */

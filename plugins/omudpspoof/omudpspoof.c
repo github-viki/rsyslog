@@ -105,19 +105,34 @@ typedef struct _instanceData {
 #define DFLT_SOURCE_PORT_START 32000
 #define DFLT_SOURCE_PORT_END   42000
 
-/* config data */
-static uchar *pszTplName = NULL; /* name of the default template to use */
-static uchar *pszSourceNameTemplate = NULL; /* name of the template containing the spoofing address */
-static uchar *pszTargetHost = NULL;
-static uchar *pszTargetPort = NULL;
-static int iCompressionLevel = 0;	/* zlib compressionlevel, the usual values */
-static int iSourcePortStart = DFLT_SOURCE_PORT_START;
-static int iSourcePortEnd = DFLT_SOURCE_PORT_END;
+typedef struct configSettings_s {
+	uchar *pszTplName; /* name of the default template to use */
+	uchar *pszSourceNameTemplate; /* name of the template containing the spoofing address */
+	uchar *pszTargetHost;
+	uchar *pszTargetPort;
+	int iCompressionLevel;	/* zlib compressionlevel, the usual values */
+	int iSourcePortStart;
+	int iSourcePortEnd;
+} configSettings_t;
+
+SCOPING_SUPPORT; /* must be set AFTER configSettings_t is defined */
+
+BEGINinitConfVars		/* (re)set config variables to default values */
+CODESTARTinitConfVars 
+	cs.pszTplName = NULL;
+	cs.pszSourceNameTemplate = NULL;
+	cs.pszTargetHost = NULL;
+	cs.pszTargetPort = NULL;
+	cs.iCompressionLevel = 0;
+	cs.iSourcePortStart = DFLT_SOURCE_PORT_START;
+	cs.iSourcePortEnd = DFLT_SOURCE_PORT_END;
+ENDinitConfVars
 
 
 /* add some variables needed for libnet */
 libnet_t *libnet_handle;
 char errbuf[LIBNET_ERRBUF_SIZE];
+pthread_mutex_t mutLibnet;
 
 /* forward definitions */
 static rsRetVal doTryResume(instanceData *pData);
@@ -180,6 +195,8 @@ ENDdbgPrintInstInfo
 
 
 /* Send a message via UDP
+ * Note: libnet is not thread-safe, so we need to ensure that only one
+ * instance ever is calling libnet code.
  * rgehards, 2007-12-20
  */
 static inline rsRetVal
@@ -193,6 +210,7 @@ UDPSend(instanceData *pData, uchar *pszSourcename, char *msg, size_t len)
 	struct sockaddr_in *tempaddr,source_ip;
 	libnet_ptag_t ip, ipo;
 	libnet_ptag_t udp;
+	sbool bNeedUnlock = 0;
 	DEFiRet;
 
 	if(pData->pSockArray == NULL) {
@@ -207,6 +225,8 @@ UDPSend(instanceData *pData, uchar *pszSourcename, char *msg, size_t len)
 	inet_pton(AF_INET, (char*)pszSourcename, &(source_ip.sin_addr));
 
 	bSendSuccess = FALSE;
+	d_pthread_mutex_lock(&mutLibnet);
+	bNeedUnlock = 1;
 	for (r = pData->f_addr; r; r = r->ai_next) {
 		tempaddr = (struct sockaddr_in *)r->ai_addr;
 		libnet_clear_packet(libnet_handle);
@@ -267,6 +287,9 @@ UDPSend(instanceData *pData, uchar *pszSourcename, char *msg, size_t len)
 	}
 
 finalize_it:
+	if(bNeedUnlock) {
+		d_pthread_mutex_unlock(&mutLibnet);
+	}
 	RETiRet;
 }
 
@@ -394,28 +417,28 @@ CODE_STD_STRING_REQUESTparseSelectorAct(2)
 	p += sizeof(":omudpspoof:") - 1; /* eat indicator sequence  (-1 because of '\0'!) */
 	CHKiRet(createInstance(&pData));
 
-	sourceTpl = (pszSourceNameTemplate == NULL) ? UCHAR_CONSTANT("RSYSLOG_omudpspoofDfltSourceTpl")
-						    : pszSourceNameTemplate;
+	sourceTpl = (cs.pszSourceNameTemplate == NULL) ? UCHAR_CONSTANT("RSYSLOG_omudpspoofDfltSourceTpl")
+						    : cs.pszSourceNameTemplate;
 
-	if(pszTargetHost == NULL) {
+	if(cs.pszTargetHost == NULL) {
 		errmsg.LogError(0, NO_ERRCODE, "No $ActionOMUDPSpoofTargetHost given, can not continue with this action.");
 		ABORT_FINALIZE(RS_RET_HOST_NOT_SPECIFIED);
 	}
 
 	/* fill instance properties */
-	CHKmalloc(pData->host = ustrdup(pszTargetHost));
-	if(pszTargetPort == NULL)
+	CHKmalloc(pData->host = ustrdup(cs.pszTargetHost));
+	if(cs.pszTargetPort == NULL)
 		pData->port = NULL;
 	else 
-		CHKmalloc(pData->port = ustrdup(pszTargetPort));
-	CHKiRet(OMSRsetEntry(*ppOMSR, 1, ustrdup(sourceTpl), OMSR_NO_RQD_TPL_OPTS));
-	pData->compressionLevel = iCompressionLevel;
-	pData->sourcePort = pData->sourcePortStart = iSourcePortStart;
-	pData->sourcePortEnd = iSourcePortEnd;
+		CHKmalloc(pData->port = ustrdup(cs.pszTargetPort));
+	CHKiRet(OMSRsetEntry(*ppOMSR, 1, ustrdup(cs.pszSourceNameTemplate), OMSR_NO_RQD_TPL_OPTS));
+	pData->compressionLevel = cs.iCompressionLevel;
+	pData->sourcePort = pData->sourcePortStart = cs.iSourcePortStart;
+	pData->sourcePortEnd = cs.iSourcePortEnd;
 
 	/* process template */
 	CHKiRet(cflineParseTemplateName(&p, *ppOMSR, 0, OMSR_NO_RQD_TPL_OPTS,
-		(pszTplName == NULL) ? (uchar*)"RSYSLOG_TraditionalForwardFormat" : pszTplName));
+		(cs.pszTplName == NULL) ? (uchar*)"RSYSLOG_TraditionalForwardFormat" : cs.pszTplName));
 
 CODE_STD_FINALIZERparseSelectorAct
 ENDparseSelectorAct
@@ -427,12 +450,12 @@ ENDparseSelectorAct
 static void
 freeConfigVars(void)
 {
-	free(pszTplName);
-	pszTplName = NULL;
-	free(pszTargetHost);
-	pszTargetHost = NULL;
-	free(pszTargetPort);
-	pszTargetPort = NULL;
+	free(cs.pszTplName);
+	cs.pszTplName = NULL;
+	free(cs.pszTargetHost);
+	cs.pszTargetHost = NULL;
+	free(cs.pszTargetPort);
+	cs.pszTargetPort = NULL;
 }
 
 
@@ -440,6 +463,7 @@ BEGINmodExit
 CODESTARTmodExit
 	/* destroy the libnet state needed for forged UDP sources */
 	libnet_destroy(libnet_handle);
+	pthread_mutex_destroy(&mutLibnet);
 	/* release what we no longer need */
 	objRelease(errmsg, CORE_COMPONENT);
 	objRelease(glbl, CORE_COMPONENT);
@@ -461,15 +485,16 @@ static rsRetVal resetConfigVariables(uchar __attribute__((unused)) *pp, void __a
 {
 	freeConfigVars();
 	/* we now must reset all non-string values */
-	iCompressionLevel = 0;
-	iSourcePortStart = DFLT_SOURCE_PORT_START;
-	iSourcePortEnd = DFLT_SOURCE_PORT_END;
+	cs.iCompressionLevel = 0;
+	cs.iSourcePortStart = DFLT_SOURCE_PORT_START;
+	cs.iSourcePortEnd = DFLT_SOURCE_PORT_END;
 	return RS_RET_OK;
 }
 
 
 BEGINmodInit()
 CODESTARTmodInit
+SCOPINGmodInit
 	*ipIFVersProvided = CURR_MOD_IF_VERSION; /* we only support the current interface specification */
 CODEmodInit_QueryRegCFSLineHdlr
 	CHKiRet(objUse(glbl, CORE_COMPONENT));
@@ -488,14 +513,15 @@ CODEmodInit_QueryRegCFSLineHdlr
 		errmsg.LogError(0, NO_ERRCODE, "Error initializing libnet, can not continue ");
 		ABORT_FINALIZE(RS_RET_ERR_LIBNET_INIT);
 	}
+	pthread_mutex_init(&mutLibnet, NULL);
 
-	CHKiRet(regCfSysLineHdlr((uchar *)"actionomudpspoofdefaulttemplate", 0, eCmdHdlrGetWord, NULL, &pszTplName, NULL));
-	CHKiRet(regCfSysLineHdlr((uchar *)"actionomudpspoofsourcenametemplate", 0, eCmdHdlrGetWord, NULL, &pszSourceNameTemplate, NULL));
-	CHKiRet(regCfSysLineHdlr((uchar *)"actionomudpspooftargethost", 0, eCmdHdlrGetWord, NULL, &pszTargetHost, NULL));
-	CHKiRet(regCfSysLineHdlr((uchar *)"actionomudpspooftargetport", 0, eCmdHdlrGetWord, NULL, &pszTargetPort, NULL));
-	CHKiRet(regCfSysLineHdlr((uchar *)"actionomudpspoofsourceportstart", 0, eCmdHdlrInt, NULL, &iSourcePortStart, NULL));
-	CHKiRet(regCfSysLineHdlr((uchar *)"actionomudpspoofsourceportend", 0, eCmdHdlrInt, NULL, &iSourcePortEnd, NULL));
-	CHKiRet(regCfSysLineHdlr((uchar *)"actionomudpcompressionlevel", 0, eCmdHdlrInt, NULL, &iCompressionLevel, NULL));
+	CHKiRet(regCfSysLineHdlr((uchar *)"actionomudpspoofdefaulttemplate", 0, eCmdHdlrGetWord, NULL, &cs.pszTplName, NULL));
+	CHKiRet(regCfSysLineHdlr((uchar *)"actionomudpspoofsourcenametemplate", 0, eCmdHdlrGetWord, NULL, &cs.pszSourceNameTemplate, NULL));
+	CHKiRet(regCfSysLineHdlr((uchar *)"actionomudpspooftargethost", 0, eCmdHdlrGetWord, NULL, &cs.pszTargetHost, NULL));
+	CHKiRet(regCfSysLineHdlr((uchar *)"actionomudpspooftargetport", 0, eCmdHdlrGetWord, NULL, &cs.pszTargetPort, NULL));
+	CHKiRet(regCfSysLineHdlr((uchar *)"actionomudpspoofsourceportstart", 0, eCmdHdlrInt, NULL, &cs.iSourcePortStart, NULL));
+	CHKiRet(regCfSysLineHdlr((uchar *)"actionomudpspoofsourceportend", 0, eCmdHdlrInt, NULL, &cs.iSourcePortEnd, NULL));
+	CHKiRet(regCfSysLineHdlr((uchar *)"actionomudpcompressionlevel", 0, eCmdHdlrInt, NULL, &cs.iCompressionLevel, NULL));
 	CHKiRet(omsdRegCFSLineHdlr((uchar *)"resetconfigvariables", 1, eCmdHdlrCustomHandler, resetConfigVariables, NULL, STD_LOADABLE_MODULE_ID));
 ENDmodInit
 

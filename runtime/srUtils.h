@@ -5,25 +5,23 @@
  * \date    2003-09-09
  *          Coding begun.
  *
- * Copyright 2003-2007 Rainer Gerhards and Adiscon GmbH.
+ * Copyright 2003-2012 Rainer Gerhards and Adiscon GmbH.
  *
  * This file is part of the rsyslog runtime library.
  *
- * The rsyslog runtime library is free software: you can redistribute it and/or modify
- * it under the terms of the GNU Lesser General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * The rsyslog runtime library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * along with the rsyslog runtime library.  If not, see <http://www.gnu.org/licenses/>.
- *
- * A copy of the GPL can be found in the file "COPYING" in this distribution.
- * A copy of the LGPL can be found in the file "COPYING.LESSER" in this distribution.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ * 
+ *       http://www.apache.org/licenses/LICENSE-2.0
+ *       -or-
+ *       see COPYING.ASL20 in the source distribution
+ * 
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 #ifndef __SRUTILS_H_INCLUDED__
 #define __SRUTILS_H_INCLUDED__ 1
@@ -95,19 +93,6 @@ int getSubString(uchar **ppSrc,  char *pDst, size_t DstSize, char cSep);
 rsRetVal getFileSize(uchar *pszName, off_t *pSize);
 
 /* mutex operations */
-/* some macros to cancel-safe lock a mutex (it will automatically be released
- * when the thread is cancelled. This needs to be done as macros because
- * pthread_cleanup_push sometimes is a macro that can not be used inside a function.
- * It's a bit ugly, but works well... rgerhards, 2008-01-20
- */
-#define	DEFVARS_mutex_cancelsafeLock int iCancelStateSave
-#define mutex_cancelsafe_lock(mut) \
-		pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &iCancelStateSave); \
-		d_pthread_mutex_lock(mut); \
-		pthread_cleanup_push(mutexCancelCleanup, mut); \
-		pthread_setcancelstate(iCancelStateSave, NULL);
-#define mutex_cancelsafe_unlock(mut) pthread_cleanup_pop(1)
-
 /* some useful constants */
 #define DEFVARS_mutexProtection\
 	int bLockedOpIsLocked=0

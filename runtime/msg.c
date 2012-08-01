@@ -7,7 +7,7 @@
  * of the "old" message code without any modifications. However, it
  * helps to have things at the right place one we go to the meat of it.
  *
- * Copyright 2007, 2008 Rainer Gerhards and Adiscon GmbH.
+ * Copyright 2007-2012 Rainer Gerhards and Adiscon GmbH.
  *
  * This file is part of the rsyslog runtime library.
  *
@@ -36,7 +36,9 @@
 #include <assert.h>
 #include <ctype.h>
 #include <sys/socket.h>
+#include <sys/sysinfo.h>
 #include <netdb.h>
+#include <libee/libee.h>
 #if HAVE_MALLOC_H
 #  include <malloc.h>
 #endif
@@ -561,8 +563,14 @@ rsRetVal propNameToID(cstr_t *pCSPropName, propid_t *pPropID)
 		*pPropID = PROP_SYS_MINUTE;
 	} else if(!strcmp((char*) pName, "$myhostname")) {
 		*pPropID = PROP_SYS_MYHOSTNAME;
+	} else if(!strcmp((char*) pName, "$!all-json")) {
+		*pPropID = PROP_CEE_ALL_JSON;
+	} else if(!strncmp((char*) pName, "$!", 2)) {
+		*pPropID = PROP_CEE;
 	} else if(!strcmp((char*) pName, "$bom")) {
 		*pPropID = PROP_SYS_BOM;
+	} else if(!strcmp((char*) pName, "$uptime")) {
+		*pPropID = PROP_SYS_UPTIME;
 	} else {
 		*pPropID = PROP_INVALID;
 		iRet = RS_RET_VAR_NOT_FOUND;
@@ -644,6 +652,10 @@ uchar *propIDToName(propid_t propID)
 			return UCHAR_CONSTANT("$MINUTE");
 		case PROP_SYS_MYHOSTNAME:
 			return UCHAR_CONSTANT("$MYHOSTNAME");
+		case PROP_CEE:
+			return UCHAR_CONSTANT("*CEE-based property*");
+		case PROP_CEE_ALL_JSON:
+			return UCHAR_CONSTANT("$!all-json");
 		case PROP_SYS_BOM:
 			return UCHAR_CONSTANT("$BOM");
 		default:
@@ -714,6 +726,7 @@ static inline rsRetVal msgBaseConstruct(msg_t **ppThis)
 	pM->pRcvFromIP = NULL;
 	pM->rcvFrom.pRcvFrom = NULL;
 	pM->pRuleset = NULL;
+	pM->event = NULL;
 	memset(&pM->tRcvdAt, 0, sizeof(pM->tRcvdAt));
 	memset(&pM->tTIMESTAMP, 0, sizeof(pM->tTIMESTAMP));
 	pM->TAG.pszTAG = NULL;
@@ -849,6 +862,8 @@ CODESTARTobjDestruct(msg)
 			rsCStrDestruct(&pThis->pCSPROCID);
 		if(pThis->pCSMSGID != NULL)
 			rsCStrDestruct(&pThis->pCSMSGID);
+		if(pThis->event != NULL)
+			ee_deleteEvent(pThis->event);
 #	ifndef HAVE_ATOMIC_BUILTINS
 		MsgUnlock(pThis);
 # 	endif
@@ -967,7 +982,7 @@ msg_t* MsgDup(msg_t* pOld)
 	*/
 	if(pOld->iLenTAG > 0) {
 		if(pOld->iLenTAG < CONF_TAG_BUFSIZE) {
-			memcpy(pNew->TAG.szBuf, pOld->TAG.szBuf, pOld->iLenTAG);
+			memcpy(pNew->TAG.szBuf, pOld->TAG.szBuf, pOld->iLenTAG + 1);
 		} else {
 			if((pNew->TAG.pszTAG = srUtilStrDup(pOld->TAG.pszTAG, pOld->iLenTAG)) == NULL) {
 				msgDestruct(&pNew);
@@ -982,11 +997,15 @@ msg_t* MsgDup(msg_t* pOld)
 	} else {
 		tmpCOPYSZ(RawMsg);
 	}
-	if(pOld->iLenHOSTNAME < CONF_HOSTNAME_BUFSIZE) {
-		memcpy(pNew->szHOSTNAME, pOld->szHOSTNAME, pOld->iLenHOSTNAME + 1);
-		pNew->pszHOSTNAME = pNew->szHOSTNAME;
+	if(pOld->pszHOSTNAME == NULL) {
+		pNew->pszHOSTNAME = NULL;
 	} else {
-		tmpCOPYSZ(HOSTNAME);
+		if(pOld->iLenHOSTNAME < CONF_HOSTNAME_BUFSIZE) {
+			memcpy(pNew->szHOSTNAME, pOld->szHOSTNAME, pOld->iLenHOSTNAME + 1);
+			pNew->pszHOSTNAME = pNew->szHOSTNAME;
+		} else {
+			tmpCOPYSZ(HOSTNAME);
+		}
 	}
 
 	tmpCOPYCSTR(ProgName);
@@ -1057,6 +1076,12 @@ static rsRetVal MsgSerialize(msg_t *pThis, strm_t *pStrm)
 	objSerializePTR(pStrm, pCSAPPNAME, CSTR);
 	objSerializePTR(pStrm, pCSPROCID, CSTR);
 	objSerializePTR(pStrm, pCSMSGID, CSTR);
+	
+	if(pThis->pRuleset != NULL) {
+		rulesetGetName(pThis->pRuleset);
+		CHKiRet(obj.SerializeProp(pStrm, UCHAR_CONSTANT("pszRuleset"), PROPTYPE_PSZ,
+			rulesetGetName(pThis->pRuleset)));
+	}
 
 	/* offset must be serialized after pszRawMsg, because we need that to obtain the correct
 	 * MSG size.
@@ -1215,7 +1240,7 @@ char *getProtocolVersionString(msg_t *pM)
 }
 
 
-static inline void
+void
 getRawMsg(msg_t *pM, uchar **pBuf, int *piLen)
 {
 	if(pM == NULL) {
@@ -1605,9 +1630,19 @@ static inline int getPROCIDLen(msg_t *pM, sbool bLockMutex)
  */
 char *getPROCID(msg_t *pM, sbool bLockMutex)
 {
+	uchar *pszRet;
+
 	ISOBJ_TYPE_assert(pM, msg);
-	preparePROCID(pM, bLockMutex);
-	return (pM->pCSPROCID == NULL) ? "-" : (char*) cstrGetSzStrNoNULL(pM->pCSPROCID);
+	if(bLockMutex == LOCK_MUTEX)
+		MsgLock(pM);
+	preparePROCID(pM, MUTEX_ALREADY_LOCKED);
+	if(pM->pCSPROCID == NULL)
+		pszRet = UCHAR_CONSTANT("-");
+	else 
+		pszRet = rsCStrGetSzStrNoNULL(pM->pCSPROCID);
+	if(bLockMutex == LOCK_MUTEX)
+		MsgUnlock(pM);
+	return (char*) pszRet;
 }
 
 
@@ -1629,13 +1664,20 @@ finalize_it:
 }
 
 
-/* rgerhards, 2005-11-24
+/* al, 2011-07-26: LockMsg to avoid race conditions
  */
 static inline char *getMSGID(msg_t *pM)
 {
-	return (pM->pCSMSGID == NULL) ? "-" : (char*) rsCStrGetSzStrNoNULL(pM->pCSMSGID);
+	if (pM->pCSMSGID == NULL) {
+		return "-"; 
+	}
+	else {
+		MsgLock(pM);
+		char* pszreturn = (char*) rsCStrGetSzStrNoNULL(pM->pCSMSGID);
+		MsgUnlock(pM);
+		return pszreturn; 
+	}
 }
-
 
 /* rgerhards 2009-06-12: set associated ruleset
  */
@@ -1643,6 +1685,16 @@ void MsgSetRuleset(msg_t *pMsg, ruleset_t *pRuleset)
 {
 	assert(pMsg != NULL);
 	pMsg->pRuleset = pRuleset;
+}
+
+
+/* rgerhards 2012-04-18: set associated ruleset (by ruleset name)
+ * If ruleset cannot be found, no update is done.
+ */
+static void
+MsgSetRulesetByName(msg_t *pMsg, cstr_t *rulesetName)
+{
+	rulesetGetRuleset(&(pMsg->pRuleset), rsCStrGetSzStrNoNULL(rulesetName));
 }
 
 
@@ -1672,6 +1724,7 @@ void MsgSetTAG(msg_t *pMsg, uchar* pszBuf, size_t lenBuf)
 
 	memcpy(pBuf, pszBuf, pMsg->iLenTAG);
 	pBuf[pMsg->iLenTAG] = '\0'; /* this also works with truncation! */
+
 }
 
 
@@ -1690,8 +1743,11 @@ static inline void tryEmulateTAG(msg_t *pM, sbool bLockMutex)
 
 	if(bLockMutex == LOCK_MUTEX)
 		MsgLock(pM);
-	if(pM->iLenTAG > 0)
+	if(pM->iLenTAG > 0) {
+		if(bLockMutex == LOCK_MUTEX)
+			MsgUnlock(pM);
 		return; /* done, no need to emulate */
+	}
 	
 	if(getProtocolVersion(pM) == 1) {
 		if(!strcmp(getPROCID(pM, MUTEX_ALREADY_LOCKED), "-")) {
@@ -1701,7 +1757,7 @@ static inline void tryEmulateTAG(msg_t *pM, sbool bLockMutex)
 			/* now we can try to emulate */
 			lenTAG = snprintf((char*)bufTAG, CONF_TAG_MAXSIZE, "%s[%s]",
 					  getAPPNAME(pM, MUTEX_ALREADY_LOCKED), getPROCID(pM, MUTEX_ALREADY_LOCKED));
-			bufTAG[32] = '\0'; /* just to make sure... */
+			bufTAG[sizeof(bufTAG)-1] = '\0'; /* just to make sure... */
 			MsgSetTAG(pM, bufTAG, lenTAG);
 		}
 	}
@@ -1820,7 +1876,15 @@ static int getStructuredDataLen(msg_t *pM)
  */
 static inline char *getStructuredData(msg_t *pM)
 {
-	return (pM->pCSStrucData == NULL) ? "-" : (char*) rsCStrGetSzStrNoNULL(pM->pCSStrucData);
+	uchar *pszRet;
+
+	MsgLock(pM);
+	if(pM->pCSStrucData == NULL)
+		pszRet = UCHAR_CONSTANT("-");
+	else 
+		pszRet = rsCStrGetSzStrNoNULL(pM->pCSStrucData);
+	MsgUnlock(pM);
+	return (char*) pszRet;
 }
 
 
@@ -1859,8 +1923,18 @@ int getProgramNameLen(msg_t *pM, sbool bLockMutex)
  */
 uchar *getProgramName(msg_t *pM, sbool bLockMutex)
 {
-	prepareProgramName(pM, bLockMutex);
-	return (pM->pCSProgName == NULL) ? UCHAR_CONSTANT("") : rsCStrGetSzStrNoNULL(pM->pCSProgName);
+	uchar *pszRet;
+
+	if(bLockMutex == LOCK_MUTEX)
+		MsgLock(pM);
+	prepareProgramName(pM, MUTEX_ALREADY_LOCKED);
+	if(pM->pCSProgName == NULL)
+		pszRet = UCHAR_CONSTANT("");
+	else 
+		pszRet = rsCStrGetSzStrNoNULL(pM->pCSProgName);
+	if(bLockMutex == LOCK_MUTEX)
+		MsgUnlock(pM);
+	return pszRet;
 }
 
 
@@ -1906,9 +1980,19 @@ static inline void prepareAPPNAME(msg_t *pM, sbool bLockMutex)
  */
 char *getAPPNAME(msg_t *pM, sbool bLockMutex)
 {
+	uchar *pszRet;
+
 	assert(pM != NULL);
-	prepareAPPNAME(pM, bLockMutex);
-	return (pM->pCSAPPNAME == NULL) ? "" : (char*) rsCStrGetSzStrNoNULL(pM->pCSAPPNAME);
+	if(bLockMutex == LOCK_MUTEX)
+		MsgLock(pM);
+	prepareAPPNAME(pM, MUTEX_ALREADY_LOCKED);
+	if(pM->pCSAPPNAME == NULL)
+		pszRet = UCHAR_CONSTANT("");
+	else 
+		pszRet = rsCStrGetSzStrNoNULL(pM->pCSAPPNAME);
+	if(bLockMutex == LOCK_MUTEX)
+		MsgUnlock(pM);
+	return (char*)pszRet;
 }
 
 /* rgerhards, 2005-11-24
@@ -2178,8 +2262,8 @@ char *textpri(char *pRes, size_t pResLen, int pri)
 	assert(pRes != NULL);
 	assert(pResLen > 0);
 
-	snprintf(pRes, pResLen, "%s.%s<%d>", syslog_fac_names[LOG_FAC(pri)],
-		 syslog_severity_names[LOG_PRI(pri)], pri);
+	snprintf(pRes, pResLen, "%s.%s", syslog_fac_names[LOG_FAC(pri)],
+		 syslog_severity_names[LOG_PRI(pri)]);
 
 	return pRes;
 }
@@ -2236,6 +2320,41 @@ static uchar *getNOW(eNOWType eNow)
 #undef tmpBUFSIZE /* clean up */
 
 
+/* Get a CEE-Property from libee. This function probably should be
+ * placed somewhere else, but this smells like a big restructuring
+ * useful in any case. So for the time being, I'll simply leave the
+ * function here, as the context seems good enough. -- rgerhards, 2010-12-01
+ */
+static inline void
+getCEEPropVal(msg_t *pMsg, es_str_t *propName, uchar **pRes, int *buflen, unsigned short *pbMustBeFreed)
+{
+	es_str_t *str = NULL;
+	int r;
+
+	if(*pbMustBeFreed)
+		free(*pRes);
+	*pRes = NULL;
+
+	if(pMsg->event == NULL) goto finalize_it;
+	r = ee_getEventFieldAsString(pMsg->event, propName, &str);
+
+	if(r != EE_OK) {
+		DBGPRINTF("msgGtCEEVar: libee error %d during ee_getEventFieldAsString\n", r);
+		FINALIZE;
+	}
+	*pRes = (unsigned char*) es_str2cstr(str, "#000");
+	es_deleteStr(str);
+	*buflen = (int) ustrlen(*pRes);
+	*pbMustBeFreed = 1;
+
+finalize_it:
+	if(*pRes == NULL) {
+		/* could not find any value, so set it to empty */
+		*pRes = (unsigned char*)"";
+		*pbMustBeFreed = 0;
+	}
+}
+
 /* This function returns a string-representation of the 
  * requested message property. This is a generic function used
  * to abstract properties so that these can be easier
@@ -2278,7 +2397,7 @@ static uchar *getNOW(eNOWType eNow)
 	*pPropLen = sizeof("**OUT OF MEMORY**") - 1; \
 	return(UCHAR_CONSTANT("**OUT OF MEMORY**"));}
 uchar *MsgGetProp(msg_t *pMsg, struct templateEntry *pTpe,
-                 propid_t propID, size_t *pPropLen,
+                 propid_t propid, es_str_t *propName, size_t *pPropLen,
 		 unsigned short *pbMustBeFreed)
 {
 	uchar *pRes; /* result pointer */
@@ -2287,6 +2406,7 @@ uchar *MsgGetProp(msg_t *pMsg, struct templateEntry *pTpe,
 	uchar *pBuf;
 	int iLen;
 	short iOffs;
+	es_str_t *str; /* for CEE handling, temp. string */
 
 	BEGINfunc
 	assert(pMsg != NULL);
@@ -2300,7 +2420,7 @@ uchar *MsgGetProp(msg_t *pMsg, struct templateEntry *pTpe,
 
 	*pbMustBeFreed = 0;
 
-	switch(propID) {
+	switch(propid) {
 		case PROP_MSG:
 			pRes = getMSG(pMsg);
 			bufLen = getMSGLen(pMsg);
@@ -2433,17 +2553,48 @@ uchar *MsgGetProp(msg_t *pMsg, struct templateEntry *pTpe,
 		case PROP_SYS_MYHOSTNAME:
 			pRes = glbl.GetLocalHostName();
 			break;
+		case PROP_CEE_ALL_JSON:
+			ee_fmtEventToJSON(pMsg->event, &str);
+			pRes = (uchar*) es_str2cstr(str, "#000");
+			es_deleteStr(str);
+			*pbMustBeFreed = 1;	/* all of these functions allocate dyn. memory */
+			break;
+		case PROP_CEE:
+			getCEEPropVal(pMsg, propName, &pRes, &bufLen, pbMustBeFreed);
+			break;
 		case PROP_SYS_BOM:
 			if(*pbMustBeFreed == 1)
 				free(pRes);
 			pRes = (uchar*) "\xEF\xBB\xBF";
 			*pbMustBeFreed = 0;
 			break;
+		case PROP_SYS_UPTIME:
+#			ifdef OS_SOLARIS
+			pRes = (uchar*) "UPTIME NOT available under Solaris";
+			*pbMustBeFreed = 0;
+#			else
+			{
+			struct sysinfo s_info;
+
+			if((pRes = (uchar*) MALLOC(sizeof(uchar) * 32)) == NULL) {
+				RET_OUT_OF_MEMORY;
+			}
+			*pbMustBeFreed = 1;
+
+			if(sysinfo(&s_info) < 0) {
+				*pPropLen = sizeof("**SYSCALL FAILED**") - 1;
+				return(UCHAR_CONSTANT("**SYSCALL FAILED**"));
+			}
+
+			snprintf((char*) pRes, sizeof(uchar) * 32, "%ld", s_info.uptime);
+			}
+#			endif
+		break;
 		default:
 			/* there is no point in continuing, we may even otherwise render the
 			 * error message unreadable. rgerhards, 2007-07-10
 			 */
-			dbgprintf("invalid property id: '%d'\n", propID);
+			dbgprintf("invalid property id: '%d'\n", propid);
 			*pbMustBeFreed = 0;
 			*pPropLen = sizeof("**INVALID PROPERTY NAME**") - 1;
 			return UCHAR_CONSTANT("**INVALID PROPERTY NAME**");
@@ -2451,6 +2602,7 @@ uchar *MsgGetProp(msg_t *pMsg, struct templateEntry *pTpe,
 
 	/* If we did not receive a template pointer, we are already done... */
 	if(pTpe == NULL) {
+		*pPropLen = (bufLen == -1) ? ustrlen(pRes) : bufLen;
 		return pRes;
 	}
 	
@@ -2868,6 +3020,7 @@ uchar *MsgGetProp(msg_t *pMsg, struct templateEntry *pTpe,
 		}
 	}
 
+dbgprintf("prop repl 4, pRes='%s', len %d\n", pRes, bufLen);
 	/* Take care of spurious characters to make the property safe
 	 * for a path definition
 	 */
@@ -2945,7 +3098,13 @@ uchar *MsgGetProp(msg_t *pMsg, struct templateEntry *pTpe,
 		}
 		
 		/* check for "." and ".." (note the parenthesis in the if condition!) */
-		if((*pRes == '.') && (*(pRes + 1) == '\0' || (*(pRes + 1) == '.' && *(pRes + 2) == '\0'))) {
+		if(*pRes == '\0') {
+			if(*pbMustBeFreed == 1)
+				free(pRes);
+			pRes = UCHAR_CONSTANT("_");
+			bufLen = 1;
+			*pbMustBeFreed = 0;
+		} else if((*pRes == '.') && (*(pRes + 1) == '\0' || (*(pRes + 1) == '.' && *(pRes + 2) == '\0'))) {
 			uchar *pTmp = pRes;
 
 			if(*(pRes + 1) == '\0')
@@ -2954,12 +3113,6 @@ uchar *MsgGetProp(msg_t *pMsg, struct templateEntry *pTpe,
 				pRes = UCHAR_CONSTANT("_.");;
 			if(*pbMustBeFreed == 1)
 				free(pTmp);
-			*pbMustBeFreed = 0;
-		} else if(*pRes == '\0') {
-			if(*pbMustBeFreed == 1)
-				free(pRes);
-			pRes = UCHAR_CONSTANT("_");
-			bufLen = 1;
 			*pbMustBeFreed = 0;
 		}
 	}
@@ -3032,8 +3185,60 @@ uchar *MsgGetProp(msg_t *pMsg, struct templateEntry *pTpe,
 		bufLen = ustrlen(pRes);
 	*pPropLen = bufLen;
 
+dbgprintf("end prop repl, pRes='%s', len %d\n", pRes, bufLen);
 	ENDfunc
 	return(pRes);
+}
+
+
+/* The function returns a cee variable suitable for use with RainerScript. Most importantly, this means
+ * that the value is returned in a var_t object. The var_t is constructed inside this function and
+ * MUST be freed by the caller.
+ * Note that we need to do a lot of conversions between es_str_t and cstr -- this will go away once
+ * we have moved larger parts of rsyslog to es_str_t. Acceptable for the moment, especially as we intend
+ * to rewrite the script engine as well!
+ * rgerhards, 2010-12-03
+ */
+rsRetVal
+msgGetCEEVar(msg_t *pMsg, cstr_t *propName, var_t **ppVar)
+{
+	DEFiRet;
+	var_t *pVar;
+	cstr_t *pstrProp;
+	es_str_t *str = NULL;
+	es_str_t *epropName = NULL;
+	int r;
+
+	ISOBJ_TYPE_assert(pMsg, msg);
+	ASSERT(propName != NULL);
+	ASSERT(ppVar != NULL);
+
+	/* make sure we have a var_t instance */
+	CHKiRet(var.Construct(&pVar));
+	CHKiRet(var.ConstructFinalize(pVar));
+
+	epropName = es_newStrFromBuf((char*)propName->pBuf, propName->iStrLen);
+	r = ee_getEventFieldAsString(pMsg->event, epropName, &str);
+
+	if(r != EE_OK) {
+		DBGPRINTF("msgGtCEEVar: libee error %d during ee_getEventFieldAsString\n", r);
+		CHKiRet(cstrConstruct(&pstrProp));
+		CHKiRet(cstrFinalize(pstrProp));
+	} else {
+		CHKiRet(cstrConstructFromESStr(&pstrProp, str));
+	}
+
+	/* now create a string object out of it and hand that over to the var */
+	CHKiRet(var.SetString(pVar, pstrProp));
+	es_deleteStr(str);
+
+	/* finally store var */
+	*ppVar = pVar;
+
+finalize_it:
+	if(epropName != NULL)
+		es_deleteStr(epropName);
+	RETiRet;
 }
 
 
@@ -3064,7 +3269,7 @@ msgGetMsgVar(msg_t *pThis, cstr_t *pstrPropName, var_t **ppVar)
 	/* always call MsgGetProp() without a template specifier */
 	/* TODO: optimize propNameToID() call -- rgerhards, 2009-06-26 */
 	propNameToID(pstrPropName, &propid);
-	pszProp = (uchar*) MsgGetProp(pThis, NULL, propid, &propLen, &bMustBeFreed);
+	pszProp = (uchar*) MsgGetProp(pThis, NULL, propid, NULL, &propLen, &bMustBeFreed);
 
 	/* now create a string object out of it and hand that over to the var */
 	CHKiRet(rsCStrConstructFromszStr(&pstrProp, pszProp));
@@ -3079,6 +3284,8 @@ finalize_it:
 
 	RETiRet;
 }
+
+
 /* This function can be used as a generic way to set properties.
  * We have to handle a lot of legacy, so our return value is not always
  * 100% correct (called functions do not always provide one, should
@@ -3146,8 +3353,13 @@ rsRetVal MsgSetProperty(msg_t *pThis, var_t *pProp)
 		memcpy(&pThis->tRcvdAt, &pProp->val.vSyslogTime, sizeof(struct syslogTime));
 	} else if(isProp("tTIMESTAMP")) {
 		memcpy(&pThis->tTIMESTAMP, &pProp->val.vSyslogTime, sizeof(struct syslogTime));
+	} else if(isProp("pszRuleset")) {
+		MsgSetRulesetByName(pThis, pProp->val.pStr);
 	} else if(isProp("pszMSG")) {
 		dbgprintf("no longer supported property pszMSG silently ignored\n");
+	} else {
+		dbgprintf("unknown supported property '%s' silently ignored\n",
+			  rsCStrGetSzStrNoNULL(pProp->pcsName));
 	}
 
 finalize_it:

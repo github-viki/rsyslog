@@ -13,25 +13,23 @@
  *
  * For details, visit doc/debug.html
  *
- * Copyright 2008 Rainer Gerhards and Adiscon GmbH.
+ * Copyright 2008-2012 Rainer Gerhards and Adiscon GmbH.
  *
  * This file is part of the rsyslog runtime library.
  *
- * The rsyslog runtime library is free software: you can redistribute it and/or modify
- * it under the terms of the GNU Lesser General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * The rsyslog runtime library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * along with the rsyslog runtime library.  If not, see <http://www.gnu.org/licenses/>.
- *
- * A copy of the GPL can be found in the file "COPYING" in this distribution.
- * A copy of the LGPL can be found in the file "COPYING.LESSER" in this distribution.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ * 
+ *       http://www.apache.org/licenses/LICENSE-2.0
+ *       -or-
+ *       see COPYING.ASL20 in the source distribution
+ * 
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 #include "config.h" /* autotools! */
 #include <stdio.h>
@@ -70,7 +68,7 @@ static int bPrintAllDebugOnExit = 0;
 static int bAbortTrace = 1;	/* print a trace after SIGABRT or SIGSEGV */
 static char *pszAltDbgFileName = NULL; /* if set, debug output is *also* sent to here */
 static int altdbg = -1;	/* and the handle for alternate debug output */
-static int stddbg;
+int stddbg = 1; /* the handle for regular debug output, set to stdout if not forking, -1 otherwise */
 
 /* list of files/objects that should be printed */
 typedef struct dbgPrintName_s {
@@ -843,12 +841,15 @@ do_dbgprint(uchar *pszObjName, char *pszMsg, size_t lenMsg)
 	static int bWasNL = 0;
 	char pszThrdName[64]; /* 64 is to be on the safe side, anything over 20 is bad... */
 	char pszWriteBuf[32*1024];
+	size_t lenCopy;
+	size_t offsWriteBuf = 0;
 	size_t lenWriteBuf;
 	struct timespec t;
 #	if  _POSIX_TIMERS <= 0
 	struct timeval tv;
 #	endif
 
+#if 1
 	/* The bWasNL handler does not really work. It works if no thread
 	 * switching occurs during non-NL messages. Else, things are messed
 	 * up. Anyhow, it works well enough to provide useful help during
@@ -859,8 +860,8 @@ do_dbgprint(uchar *pszObjName, char *pszMsg, size_t lenMsg)
 	 */
 	if(ptLastThrdID != pthread_self()) {
 		if(!bWasNL) {
-			if(stddbg != -1) write(stddbg, "\n", 1);
-			if(altdbg != -1) write(altdbg, "\n", 1);
+			pszWriteBuf[0] = '\n';
+			offsWriteBuf = 1;
 			bWasNL = 1;
 		}
 		ptLastThrdID = pthread_self();
@@ -881,25 +882,28 @@ do_dbgprint(uchar *pszObjName, char *pszMsg, size_t lenMsg)
 			t.tv_sec = tv.tv_sec;
 			t.tv_nsec = tv.tv_usec * 1000;
 #			endif
-			lenWriteBuf = snprintf(pszWriteBuf, sizeof(pszWriteBuf),
+			lenWriteBuf = snprintf(pszWriteBuf+offsWriteBuf, sizeof(pszWriteBuf) - offsWriteBuf,
 				 	"%4.4ld.%9.9ld:", (long) (t.tv_sec % 10000), t.tv_nsec);
-			if(stddbg != -1) write(stddbg, pszWriteBuf, lenWriteBuf);
-			if(altdbg != -1) write(altdbg, pszWriteBuf, lenWriteBuf);
+			offsWriteBuf += lenWriteBuf;
 		}
 
-		lenWriteBuf = snprintf(pszWriteBuf, sizeof(pszWriteBuf), "%s: ", pszThrdName);
-		// use for testing: lenWriteBuf = snprintf(pszWriteBuf, sizeof(pszWriteBuf), "{%ld}%s: ", (long) syscall(SYS_gettid), pszThrdName);
-		if(stddbg != -1) write(stddbg, pszWriteBuf, lenWriteBuf);
-		if(altdbg != -1) write(altdbg, pszWriteBuf, lenWriteBuf);
+		lenWriteBuf = snprintf(pszWriteBuf + offsWriteBuf, sizeof(pszWriteBuf) - offsWriteBuf, "%s: ", pszThrdName);
+		offsWriteBuf += lenWriteBuf;
 		/* print object name header if we have an object */
 		if(pszObjName != NULL) {
-			lenWriteBuf = snprintf(pszWriteBuf, sizeof(pszWriteBuf), "%s: ", pszObjName);
-			if(stddbg != -1) write(stddbg, pszWriteBuf, lenWriteBuf);
-			if(altdbg != -1) write(altdbg, pszWriteBuf, lenWriteBuf);
+			lenWriteBuf = snprintf(pszWriteBuf + offsWriteBuf, sizeof(pszWriteBuf) - offsWriteBuf, "%s: ", pszObjName);
+			offsWriteBuf += lenWriteBuf;
 		}
 	}
-	if(stddbg != -1) write(stddbg, pszMsg, lenMsg);
-	if(altdbg != -1) write(altdbg, pszMsg, lenMsg);
+#endif
+	if(lenMsg > sizeof(pszWriteBuf) - offsWriteBuf) 
+		lenCopy = sizeof(pszWriteBuf) - offsWriteBuf;
+	else
+		lenCopy = lenMsg;
+	memcpy(pszWriteBuf + offsWriteBuf, pszMsg, lenCopy);
+	offsWriteBuf += lenCopy;
+	if(stddbg != -1) write(stddbg, pszWriteBuf, offsWriteBuf);
+	if(altdbg != -1) write(altdbg, pszWriteBuf, offsWriteBuf);
 
 	bWasNL = (pszMsg[lenMsg - 1] == '\n') ? 1 : 0;
 }
@@ -923,12 +927,12 @@ dbgprint(obj_t *pObj, char *pszMsg, size_t lenMsg)
 		pszObjName = obj.GetName(pObj);
 	}
 
-	pthread_mutex_lock(&mutdbgprint);
-	pthread_cleanup_push(dbgMutexCancelCleanupHdlr, &mutdbgprint);
+//	pthread_mutex_lock(&mutdbgprint);
+//	pthread_cleanup_push(dbgMutexCancelCleanupHdlr, &mutdbgprint);
 
 	do_dbgprint(pszObjName, pszMsg, lenMsg);
 
-	pthread_cleanup_pop(1);
+//	pthread_cleanup_pop(1);
 }
 #pragma GCC diagnostic warning "-Wempty-body"
 
@@ -1299,8 +1303,6 @@ dbgGetRuntimeOptions(void)
 	uchar *optname;
 
 	/* set some defaults */
-	stddbg = 1;
-
 	if((pszOpts = (uchar*) getenv("RSYSLOG_DEBUG")) != NULL) {
 		/* we have options set, so let's process them */
 		while(dbgGetRTOptNamVal(&pszOpts, &optname, &optval)) {

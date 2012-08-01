@@ -76,10 +76,7 @@ typedef struct configSettings_s {
 	uchar *pszTagName;	/**< name of tag start value that indicates snmptrapd initiated message */
 	uchar *pszSeverityMapping; /**< severitystring to numerical code mapping for snmptrapd string */
 } configSettings_t;
-configSettings_t cs;
 
-//TODO: enable for v6
-#if 0
 SCOPING_SUPPORT; /* must be set AFTER configSettings_t is defined */
 
 BEGINinitConfVars		/* (re)set config variables to default values */
@@ -88,7 +85,6 @@ CODESTARTinitConfVars
 	cs.pszSeverityMapping = NULL;
 	resetConfigVariables(NULL, NULL);
 ENDinitConfVars
-#endif
 
 
 BEGINcreateInstance
@@ -389,7 +385,7 @@ BEGINmodInit()
 	unsigned long opts;
 	int bMsgPassingSupported;
 CODESTARTmodInit
-//TODO v6: add SCOPINGmodInit
+SCOPINGmodInit
 	*ipIFVersProvided = CURR_MOD_IF_VERSION;
 		/* we only support the current interface specification */
 CODEmodInit_QueryRegCFSLineHdlr

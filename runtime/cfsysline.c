@@ -3,27 +3,25 @@
  *
  * File begun on 2007-07-30 by RGerhards
  *
- * Copyright (C) 2007, 2008 by Rainer Gerhards and Adiscon GmbH.
+ * Copyright (C) 2007-2012 Adiscon GmbH.
  *
  * This file is part of rsyslog.
  *
  * This file is part of the rsyslog runtime library.
  *
- * The rsyslog runtime library is free software: you can redistribute it and/or modify
- * it under the terms of the GNU Lesser General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * The rsyslog runtime library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * along with the rsyslog runtime library.  If not, see <http://www.gnu.org/licenses/>.
- *
- * A copy of the GPL can be found in the file "COPYING" in this distribution.
- * A copy of the LGPL can be found in the file "COPYING.LESSER" in this distribution.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ * 
+ *       http://www.apache.org/licenses/LICENSE-2.0
+ *       -or-
+ *       see COPYING.ASL20 in the source distribution
+ * 
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 #include "config.h"
 
@@ -39,6 +37,7 @@
 
 #include "cfsysline.h"
 #include "obj.h"
+#include "conf.h"
 #include "errmsg.h"
 #include "srUtils.h"
 #include "unicode-helper.h"
@@ -340,11 +339,12 @@ static int doParseOnOffOption(uchar **pp)
  */
 static rsRetVal doGetGID(uchar **pp, rsRetVal (*pSetHdlr)(void*, uid_t), void *pVal)
 {
-	struct group *pgBuf;
+	struct group *pgBuf = NULL;
 	struct group gBuf;
 	DEFiRet;
 	uchar szName[256];
-	char stringBuf[2048];	/* I hope this is large enough... */
+	int bufSize = 2048;
+	char * stringBuf = NULL;
 
 	assert(pp != NULL);
 	assert(*pp != NULL);
@@ -354,7 +354,17 @@ static rsRetVal doGetGID(uchar **pp, rsRetVal (*pSetHdlr)(void*, uid_t), void *p
 		ABORT_FINALIZE(RS_RET_NOT_FOUND);
 	}
 
-	getgrnam_r((char*)szName, &gBuf, stringBuf, sizeof(stringBuf), &pgBuf);
+
+	CHKmalloc(stringBuf = malloc(bufSize));
+	while(pgBuf == NULL) {
+		errno = 0;
+		getgrnam_r((char*)szName, &gBuf, stringBuf, bufSize, &pgBuf);
+		if((pgBuf == NULL) && (errno == ERANGE)) {
+			/* Increase bufsize and try again.*/
+			bufSize *= 2;
+			CHKmalloc(stringBuf = realloc(stringBuf, bufSize));
+		}
+	}
 
 	if(pgBuf == NULL) {
 		errmsg.LogError(0, RS_RET_NOT_FOUND, "ID for group '%s' could not be found or error", (char*)szName);
@@ -373,6 +383,7 @@ static rsRetVal doGetGID(uchar **pp, rsRetVal (*pSetHdlr)(void*, uid_t), void *p
 	skipWhiteSpace(pp); /* skip over any whitespace */
 
 finalize_it:
+	free(stringBuf);
 	RETiRet;
 }
 
@@ -806,8 +817,7 @@ finalize_it:
  * caller does not need to take care of that. The caller must, however,
  * free pCmdName if he allocated it dynamically! -- rgerhards, 2007-08-09
  */
-rsRetVal regCfSysLineHdlr(uchar *pCmdName, int bChainingPermitted, ecslCmdHdrlType eType, rsRetVal (*pHdlr)(), void *pData,
-			  void *pOwnerCookie)
+rsRetVal regCfSysLineHdlr(uchar *pCmdName, int bChainingPermitted, ecslCmdHdrlType eType, rsRetVal (*pHdlr)(), void *pData, void *pOwnerCookie)
 {
 	DEFiRet;
 	cslCmd_t *pThis;
@@ -912,6 +922,7 @@ rsRetVal processCfSysLineCommand(uchar *pCmdName, uchar **p)
 	uchar *pHdlrP; /* the handler's private p (else we could only call one handler) */
 	int bWasOnceOK; /* was the result of an handler at least once RS_RET_OK? */
 	uchar *pOKp = NULL; /* returned conf line pointer when it was OK */
+	int bHadScopingErr = 0; /* set if a scoping error occured */
 
 	iRet = llFind(&llCmdList, (void *) pCmdName, (void*) &pCmd);
 
@@ -925,17 +936,25 @@ rsRetVal processCfSysLineCommand(uchar *pCmdName, uchar **p)
 	llCookieCmdHdlr = NULL;
 	bWasOnceOK = 0;
 	while((iRetLL = llGetNextElt(&pCmd->llCmdHdlrs, &llCookieCmdHdlr, (void*)&pCmdHdlr)) == RS_RET_OK) {
-		/* for the time being, we ignore errors during handlers. The
-		 * reason is that handlers are independent. An error in one
-		 * handler does not necessarily mean that another one will
-		 * fail, too. Later, we might add a config variable to control
-		 * this behaviour (but I am not sure if that is rally
-		 * necessary). -- rgerhards, 2007-07-31
-		 */
-		pHdlrP = *p;
-		if((iRet = cslchCallHdlr(pCmdHdlr, &pHdlrP)) == RS_RET_OK) {
-			bWasOnceOK = 1;
-			pOKp = pHdlrP;
+		/* check if handler is valid in current scope */
+		if(pCmdHdlr->eConfObjType == eConfObjAlways ||
+		   (bConfStrictScoping == 0 && currConfObj == eConfObjGlobal) ||
+		   pCmdHdlr->eConfObjType == currConfObj) {
+			/* for the time being, we ignore errors during handlers. The
+			 * reason is that handlers are independent. An error in one
+			 * handler does not necessarily mean that another one will
+			 * fail, too. Later, we might add a config variable to control
+			 * this behaviour (but I am not sure if that is really
+			 * necessary). -- rgerhards, 2007-07-31
+			 */
+			pHdlrP = *p;
+			if((iRet = cslchCallHdlr(pCmdHdlr, &pHdlrP)) == RS_RET_OK) {
+				bWasOnceOK = 1;
+				pOKp = pHdlrP;
+			}
+		} else {
+			errmsg.LogError(0, RS_RET_CONF_INVLD_SCOPE, "config command invalid for current scope");
+			bHadScopingErr = 1;
 		}
 	}
 
@@ -946,6 +965,10 @@ rsRetVal processCfSysLineCommand(uchar *pCmdName, uchar **p)
 
 	if(iRetLL != RS_RET_END_OF_LINKEDLIST)
 		iRet = iRetLL;
+
+	if(bHadScopingErr) {
+		iRet = RS_RET_CONF_INVLD_SCOPE;
+	}
 
 finalize_it:
 	RETiRet;

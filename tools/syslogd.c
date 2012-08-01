@@ -21,7 +21,7 @@
  * For further information, please see http://www.rsyslog.com
  *
  * rsyslog - An Enhanced syslogd Replacement.
- * Copyright 2003-2009 Rainer Gerhards and Adiscon GmbH.
+ * Copyright 2003-2012 Rainer Gerhards and Adiscon GmbH.
  *
  * This file is part of rsyslog.
  *
@@ -154,6 +154,7 @@ DEFobjCurrIf(net) /* TODO: make go away! */
 
 /* forward definitions */
 static rsRetVal GlobalClassExit(void);
+static rsRetVal queryLocalHostname(void);
 
 
 #ifndef _PATH_LOGCONF 
@@ -242,7 +243,6 @@ static int	bDebugPrintModuleList = 1;/* output module list in debug mode? */
 static int	bErrMsgToStderr = 1; /* print error messages to stderr (in addition to everything else)? */
 int 	bReduceRepeatMsgs; /* reduce repeated message - 0 - no, 1 - yes */
 int 	bAbortOnUncleanConfig = 0; /* abort run (rather than starting with partial config) if there was any issue in conf */
-int	bActExecWhenPrevSusp; /* execute action only when previous one was suspended? */
 /* end global config file state variables */
 
 int	MarkInterval = 20 * 60;	/* interval between marks in seconds - read-only after startup */
@@ -290,7 +290,6 @@ static int iMainMsgQueueDeqtWinToHr = 25;			/* hour begin of time frame when que
 static rsRetVal resetConfigVariables(uchar __attribute__((unused)) *pp, void __attribute__((unused)) *pVal)
 {
 	bLogStatusMsgs = DFLT_bLogStatusMsgs;
-	bActExecWhenPrevSusp = 0;
 	bDebugPrintTemplateList = 1;
 	bDebugPrintCfSysLineHandlerList = 1;
 	bDebugPrintModuleList = 1;
@@ -317,7 +316,6 @@ static rsRetVal resetConfigVariables(uchar __attribute__((unused)) *pp, void __a
 	MainMsgQueType = QUEUETYPE_FIXED_ARRAY;
 	iMainMsgQueMaxDiskSpace = 0;
 	iMainMsgQueDeqBatchSize = 32;
-	glbliActionResumeRetryCount = 0;
 
 	return RS_RET_OK;
 }
@@ -799,7 +797,7 @@ DEFFUNC_llExecFunc(flushRptdMsgsActions)
 		DBGPRINTF("flush %s: repeated %d times, %d sec.\n",
 		    module.GetStateName(pAction->pMod), pAction->f_prevcount,
 		    repeatinterval[pAction->f_repeatcount]);
-		actionWriteToAction(pAction, NULL, 0);
+		actionWriteToAction(pAction);
 		BACKOFF(pAction);
 	}
 	UnlockObj(pAction);
@@ -1071,6 +1069,11 @@ die(int sig)
 		errno = 0;
 		logmsgInternal(NO_ERRCODE, LOG_SYSLOG|LOG_INFO, (uchar*)buf, 0);
 	}
+	/* we sleep for 50ms to give the queue a chance to pick up the exit message;
+	 * otherwise we have seen cases where the message did not make it to log
+	 * files, even on idle systems.
+	 */
+	srSleep(0, 50);
 
 	/* drain queue (if configured so) and stop main queue worker thread pool */
 	DBGPRINTF("Terminating main queue...\n");
@@ -1488,6 +1491,7 @@ runInputModules(void)
 	pMod = module.GetNxtType(NULL, eMOD_IN);
 	while(pMod != NULL) {
 		if(pMod->mod.im.bCanRun) {
+			DBGPRINTF("trying to start input module '%s'\n", pMod->pszName);
 			/* activate here */
 			bNeedsCancel = (pMod->isCompatibleWithFeature(sFEATURENonCancelInputTermination) == RS_RET_OK) ?
 				       0 : 1;
@@ -1897,6 +1901,11 @@ DEFFUNC_llExecFunc(doHUPActions)
  * is *NOT* the sighup handler. The signal is recorded by the handler, that record
  * detected inside the mainloop and then this function is called to do the
  * real work. -- rgerhards, 2008-10-22
+ * Note: there is a VERY slim chance of a data race when the hostname is reset.
+ * We prefer to take this risk rather than sync all accesses, because to the best
+ * of my analysis it can not really hurt (the actual property is reference-counted)
+ * but the sync would require some extra CPU for *each* message processed.
+ * rgerhards, 2012-04-11
  */
 static inline void
 doHUP(void)
@@ -1912,6 +1921,7 @@ doHUP(void)
 		logmsgInternal(NO_ERRCODE, LOG_SYSLOG|LOG_INFO, (uchar*)buf, 0);
 	}
 
+	queryLocalHostname(); /* re-read our name */
 	ruleset.IterateAllActions(doHUPActions, NULL);
 }
 
@@ -2042,7 +2052,6 @@ static rsRetVal loadBuildInModules(void)
 	 * This, I think, is the right thing to do. -- rgerhards, 2007-07-31
 	 */
 	CHKiRet(regCfSysLineHdlr((uchar *)"logrsyslogstatusmessages", 0, eCmdHdlrBinary, NULL, &bLogStatusMsgs, NULL));
-	CHKiRet(regCfSysLineHdlr((uchar *)"actionresumeretrycount", 0, eCmdHdlrInt, NULL, &glbliActionResumeRetryCount, NULL));
 	CHKiRet(regCfSysLineHdlr((uchar *)"defaultruleset", 0, eCmdHdlrGetWord, setDefaultRuleset, NULL, NULL));
 	CHKiRet(regCfSysLineHdlr((uchar *)"ruleset", 0, eCmdHdlrGetWord, setCurrRuleset, NULL, NULL));
 	CHKiRet(regCfSysLineHdlr((uchar *)"sleep", 0, eCmdHdlrInt, putToSleep, NULL, NULL));
@@ -2070,7 +2079,6 @@ static rsRetVal loadBuildInModules(void)
 	CHKiRet(regCfSysLineHdlr((uchar *)"mainmsgqueuedequeuetimeend", 0, eCmdHdlrInt, NULL, &iMainMsgQueueDeqtWinToHr, NULL));
 	CHKiRet(regCfSysLineHdlr((uchar *)"abortonuncleanconfig", 0, eCmdHdlrBinary, NULL, &bAbortOnUncleanConfig, NULL));
 	CHKiRet(regCfSysLineHdlr((uchar *)"repeatedmsgreduction", 0, eCmdHdlrBinary, NULL, &bReduceRepeatMsgs, NULL));
-	CHKiRet(regCfSysLineHdlr((uchar *)"actionexeconlywhenpreviousissuspended", 0, eCmdHdlrBinary, NULL, &bActExecWhenPrevSusp, NULL));
 	CHKiRet(regCfSysLineHdlr((uchar *)"actionresumeinterval", 0, eCmdHdlrInt, setActionResumeInterval, NULL, NULL));
 	CHKiRet(regCfSysLineHdlr((uchar *)"template", 0, eCmdHdlrCustomHandler, conf.doNameLine, (void*)DIR_TEMPLATE, NULL));
 	CHKiRet(regCfSysLineHdlr((uchar *)"outchannel", 0, eCmdHdlrCustomHandler, conf.doNameLine, (void*)DIR_OUTCHANNEL, NULL));
@@ -2129,7 +2137,7 @@ static void printVersion(void)
 #else
 	printf("\t32bit Atomic operations supported:\tNo\n");
 #endif
-#ifdef	HAVE_ATOMIC_BUILTINS64
+#ifdef	HAVE_ATOMIC_BUILTINS_64BIT
 	printf("\t64bit Atomic operations supported:\tYes\n");
 #else
 	printf("\t64bit Atomic operations supported:\tNo\n");
@@ -2329,6 +2337,93 @@ GlobalClassExit(void)
 }
 
 
+/* query our host and domain names - we need to do this early as we may emit
+ * rgerhards, 2012-04-11
+ */
+static rsRetVal
+queryLocalHostname(void)
+{
+	uchar *LocalHostName;
+	uchar *LocalDomain;
+	uchar *LocalFQDNName;
+	uchar *p;
+	struct hostent *hent;
+	DEFiRet;
+
+	net.getLocalHostname(&LocalFQDNName);
+	CHKmalloc(LocalHostName = (uchar*) strdup((char*)LocalFQDNName));
+	glbl.SetLocalFQDNName(LocalFQDNName); /* set the FQDN before we modify it */
+	if((p = (uchar*)strchr((char*)LocalHostName, '.'))) {
+		*p++ = '\0';
+		LocalDomain = p;
+	} else {
+		LocalDomain = (uchar*)"";
+
+		/* It's not clearly defined whether gethostname()
+		 * should return the simple hostname or the fqdn. A
+		 * good piece of software should be aware of both and
+		 * we want to distribute good software.  Joey
+		 *
+		 * Good software also always checks its return values...
+		 * If syslogd starts up before DNS is up & /etc/hosts
+		 * doesn't have LocalHostName listed, gethostbyname will
+                * return NULL.
+		 */
+		/* TODO: gethostbyname() is not thread-safe, but replacing it is
+		 * not urgent as we do not run on multiple threads here. rgerhards, 2007-09-25
+		 */
+		hent = gethostbyname((char*)LocalHostName);
+		if(hent) {
+			int i = 0;
+
+			if(hent->h_aliases) {
+				size_t hnlen;
+
+				hnlen = strlen((char *) LocalHostName);
+
+				for (i = 0; hent->h_aliases[i]; i++) {
+					if (!strncmp(hent->h_aliases[i], (char *) LocalHostName, hnlen)
+					    && hent->h_aliases[i][hnlen] == '.') {
+						/* found a matching hostname */
+						break;
+					}
+				}
+			}
+
+			free(LocalHostName);
+			if(hent->h_aliases && hent->h_aliases[i]) {
+				CHKmalloc(LocalHostName = (uchar*)strdup(hent->h_aliases[i]));
+			} else {
+				CHKmalloc(LocalHostName = (uchar*)strdup(hent->h_name));
+			}
+
+			if((p = (uchar*)strchr((char*)LocalHostName, '.')))
+			{
+				*p++ = '\0';
+				LocalDomain = p;
+			}
+		}
+	}
+
+	/* LocalDomain is "" or part of LocalHostName, allocate a new string */
+	CHKmalloc(LocalDomain = (uchar*)strdup((char*)LocalDomain));
+
+	/* Convert to lower case to recognize the correct domain laterly */
+	for(p = LocalDomain ; *p ; p++)
+		*p = (char)tolower((int)*p);
+
+	/* we now have our hostname and can set it inside the global vars.
+	 * TODO: think if all of this would better be a runtime function
+	 * rgerhards, 2008-04-17
+	 */
+	glbl.SetLocalHostName(LocalHostName);
+	glbl.SetLocalDomain(LocalDomain);
+	glbl.GenerateLocalHostNameProperty(); /* must be redone after conf processing, FQDN setting may have changed */
+finalize_it:
+	RETiRet;
+}
+
+
 /* some support for command line option parsing. Any non-trivial options must be
  * buffered until the complete command line has been parsed. This is necessary to
  * prevent dependencies between the options. That, in turn, means we need to have
@@ -2411,13 +2506,16 @@ doGlblProcessInit(void)
 
 	if( !(Debug == DEBUG_FULL || NoFork) )
 	{
-		DBGPRINTF("Checking pidfile.\n");
+		DBGPRINTF("Checking pidfile '%s'.\n", PidFile);
 		if (!check_pid(PidFile))
 		{
 			memset(&sigAct, 0, sizeof (sigAct));
 			sigemptyset(&sigAct.sa_mask);
 			sigAct.sa_handler = doexit;
 			sigaction(SIGTERM, &sigAct, NULL);
+
+			/* stop writing debug messages to stdout (if debugging is on) */
+			stddbg = -1;
 
 			if (fork()) {
 				/* Parent process
@@ -2481,7 +2579,7 @@ doGlblProcessInit(void)
 	}
 
 	/* tuck my process id away */
-	DBGPRINTF("Writing pidfile %s.\n", PidFile);
+	DBGPRINTF("Writing pidfile '%s'.\n", PidFile);
 	if (!check_pid(PidFile))
 	{
 		if (!write_pid(PidFile))
@@ -2530,9 +2628,7 @@ int realMain(int argc, char **argv)
 {
 	DEFiRet;
 
-	register uchar *p;
 	int ch;
-	struct hostent *hent;
 	extern int optind;
 	extern char *optarg;
 	int bEOptionWasGiven = 0;
@@ -2541,9 +2637,6 @@ int realMain(int argc, char **argv)
 	int bChDirRoot = 1; /* change the current working directory to "/"? */
 	char *arg;	/* for command line option processing */
 	uchar legacyConfLine[80];
-	uchar *LocalHostName;
-	uchar *LocalDomain;
-	uchar *LocalFQDNName;
 	char cwdbuf[128]; /* buffer to obtain/display current working directory */
 
 	/* first, parse the command line options. We do not carry out any actual work, just
@@ -2651,7 +2744,7 @@ int realMain(int argc, char **argv)
 
 	/* we need to create the inputName property (only once during our lifetime) */
 	CHKiRet(prop.Construct(&pInternalInputName));
-	CHKiRet(prop.SetString(pInternalInputName, UCHAR_CONSTANT("rsyslogd"), sizeof("rsyslgod") - 1));
+	CHKiRet(prop.SetString(pInternalInputName, UCHAR_CONSTANT("rsyslogd"), sizeof("rsyslogd") - 1));
 	CHKiRet(prop.ConstructFinalize(pInternalInputName));
 
 	CHKiRet(prop.Construct(&pLocalHostIP));
@@ -2661,52 +2754,7 @@ int realMain(int argc, char **argv)
 	/* get our host and domain names - we need to do this early as we may emit
 	 * error log messages, which need the correct hostname. -- rgerhards, 2008-04-04
 	 */
-	net.getLocalHostname(&LocalFQDNName);
-	CHKmalloc(LocalHostName = (uchar*) strdup((char*)LocalFQDNName));
-	glbl.SetLocalFQDNName(LocalFQDNName); /* set the FQDN before we modify it */
-	if((p = (uchar*)strchr((char*)LocalHostName, '.'))) {
-		*p++ = '\0';
-		LocalDomain = p;
-	} else {
-		LocalDomain = (uchar*)"";
-
-		/* It's not clearly defined whether gethostname()
-		 * should return the simple hostname or the fqdn. A
-		 * good piece of software should be aware of both and
-		 * we want to distribute good software.  Joey
-		 *
-		 * Good software also always checks its return values...
-		 * If syslogd starts up before DNS is up & /etc/hosts
-		 * doesn't have LocalHostName listed, gethostbyname will
-                * return NULL.
-		 */
-		/* TODO: gethostbyname() is not thread-safe, but replacing it is
-		 * not urgent as we do not run on multiple threads here. rgerhards, 2007-09-25
-		 */
-		hent = gethostbyname((char*)LocalHostName);
-		if(hent) {
-			free(LocalHostName);
-			CHKmalloc(LocalHostName = (uchar*)strdup(hent->h_name));
-
-			if((p = (uchar*)strchr((char*)LocalHostName, '.')))
-			{
-				*p++ = '\0';
-				LocalDomain = p;
-			}
-		}
-	}
-
-	/* Convert to lower case to recognize the correct domain laterly */
-	for(p = LocalDomain ; *p ; p++)
-		*p = (char)tolower((int)*p);
-
-	/* we now have our hostname and can set it inside the global vars.
-	 * TODO: think if all of this would better be a runtime function
-	 * rgerhards, 2008-04-17
-	 */
-	glbl.SetLocalHostName(LocalHostName);
-	glbl.SetLocalDomain(LocalDomain);
-	glbl.GenerateLocalHostNameProperty(); /* must be redone after conf processing, FQDN setting may have changed */
+	queryLocalHostname();
 
 	/* initialize the objects */
 	if((iRet = modInitIminternal()) != RS_RET_OK) {

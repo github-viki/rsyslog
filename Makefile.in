@@ -71,18 +71,20 @@ sbin_PROGRAMS =
 @ENABLE_MMSNMPTRAPD_TRUE@am__append_28 = plugins/mmsnmptrapd
 @ENABLE_IMFILE_TRUE@am__append_29 = plugins/imfile
 @ENABLE_IMPTCP_TRUE@am__append_30 = plugins/imptcp
-@ENABLE_IMDIAG_TRUE@am__append_31 = plugins/imdiag
-@ENABLE_MAIL_TRUE@am__append_32 = plugins/ommail
-@ENABLE_OMPROG_TRUE@am__append_33 = plugins/omprog
-@ENABLE_RFC3195_TRUE@am__append_34 = plugins/im3195
-@ENABLE_ORACLE_TRUE@am__append_35 = plugins/omoracle
-@ENABLE_GUI_TRUE@am__append_36 = java
+@ENABLE_IMTTCP_TRUE@am__append_31 = plugins/imttcp
+@ENABLE_IMDIAG_TRUE@am__append_32 = plugins/imdiag
+@ENABLE_MAIL_TRUE@am__append_33 = plugins/ommail
+@ENABLE_OMPROG_TRUE@am__append_34 = plugins/omprog
+@ENABLE_RFC3195_TRUE@am__append_35 = plugins/im3195
+@ENABLE_MMNORMALIZE_TRUE@am__append_36 = plugins/mmnormalize
+@ENABLE_ORACLE_TRUE@am__append_37 = plugins/omoracle
+@ENABLE_GUI_TRUE@am__append_38 = java
 subdir = .
 DIST_COMMON = README $(am__configure_deps) $(srcdir)/Makefile.am \
 	$(srcdir)/Makefile.in $(srcdir)/config.h.in \
 	$(top_srcdir)/configure AUTHORS COPYING COPYING.LESSER \
 	ChangeLog INSTALL NEWS compile config.guess config.sub depcomp \
-	install-sh ltmain.sh missing
+	install-sh ltmain.sh missing ylwrap
 ACLOCAL_M4 = $(top_srcdir)/aclocal.m4
 am__aclocal_m4_deps = $(top_srcdir)/m4/atomic_operations.m4 \
 	$(top_srcdir)/m4/atomic_operations_64bit.m4 \
@@ -211,8 +213,8 @@ DIST_SUBDIRS = doc runtime . plugins/immark plugins/imuxsock \
 	plugins/omruleset plugins/omdbalerting plugins/omudpspoof \
 	plugins/omuxsock plugins/omhdfs plugins/omtemplate \
 	plugins/mmsnmptrapd plugins/imfile plugins/imptcp \
-	plugins/imdiag plugins/ommail plugins/omprog plugins/im3195 \
-	plugins/omoracle java tests
+	plugins/imttcp plugins/imdiag plugins/ommail plugins/omprog \
+	plugins/im3195 plugins/mmnormalize plugins/omoracle java tests
 DISTFILES = $(DIST_COMMON) $(DIST_SOURCES) $(TEXINFOS) $(EXTRA_DIST)
 distdir = $(PACKAGE)-$(VERSION)
 top_distdir = $(distdir)
@@ -292,13 +294,21 @@ LD = @LD@
 LDFLAGS = @LDFLAGS@
 LIBDBI_CFLAGS = @LIBDBI_CFLAGS@
 LIBDBI_LIBS = @LIBDBI_LIBS@
+LIBEE_CFLAGS = @LIBEE_CFLAGS@
+LIBEE_LIBS = @LIBEE_LIBS@
+LIBESTR_CFLAGS = @LIBESTR_CFLAGS@
+LIBESTR_LIBS = @LIBESTR_LIBS@
 LIBLOGGING_CFLAGS = @LIBLOGGING_CFLAGS@
 LIBLOGGING_LIBS = @LIBLOGGING_LIBS@
+LIBLOGNORM_CFLAGS = @LIBLOGNORM_CFLAGS@
+LIBLOGNORM_LIBS = @LIBLOGNORM_LIBS@
 LIBOBJS = @LIBOBJS@
 LIBS = @LIBS@
 LIBTOOL = @LIBTOOL@
 LIPO = @LIPO@
 LN_S = @LN_S@
+LOGNORM_CFLAGS = @LOGNORM_CFLAGS@
+LOGNORM_LIBS = @LOGNORM_LIBS@
 LTLIBOBJS = @LTLIBOBJS@
 MAKEINFO = @MAKEINFO@
 MKDIR_P = @MKDIR_P@
@@ -442,7 +452,9 @@ EXTRA_DIST = \
 	slackware/rc.rsyslogd \
 	contrib/README \
 	rsyslog.conf \
+	COPYING \
 	COPYING.LESSER \
+	COPYING.ASL20 \
 	contrib/gnutls/ca.pem \
 	contrib/gnutls/cert.pem \
 	contrib/gnutls/key.pem \
@@ -463,7 +475,8 @@ SUBDIRS = doc runtime . plugins/immark plugins/imuxsock plugins/imtcp \
 	$(am__append_25) $(am__append_26) $(am__append_27) \
 	$(am__append_28) $(am__append_29) $(am__append_30) \
 	$(am__append_31) $(am__append_32) $(am__append_33) \
-	$(am__append_34) $(am__append_35) $(am__append_36) tests
+	$(am__append_34) $(am__append_35) $(am__append_36) \
+	$(am__append_37) $(am__append_38) tests
 
 # make sure "make distcheck" tries to build all modules. This means that
 # a developer must always have an environment where every supporting library
@@ -472,6 +485,7 @@ SUBDIRS = doc runtime . plugins/immark plugins/imuxsock plugins/imtcp \
 # in a make distcheck is so that we detect code that accidently was not updated
 # when some global update happened.
 DISTCHECK_CONFIGURE_FLAGS = --enable-gssapi_krb5 \
+				--enable-gnutls \
 				--enable-imfile \
 				--enable-snmp \
 				--enable-pgsql \
@@ -489,10 +503,10 @@ DISTCHECK_CONFIGURE_FLAGS = --enable-gssapi_krb5 \
 				--enable-omprog \
 				--enable-imdiag \
 				--enable-imptcp \
+				--enable-imttcp \
 				--enable-omuxsock \
 				--enable-extended-tests \
 				--enable-impstats \
-				--enable-imptcp \
 				--enable-memcheck \
 				--enable-pmaixforwardedfrom \
 				--enable-pmcisconames \

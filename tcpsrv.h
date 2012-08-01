@@ -1,23 +1,22 @@
 /* Definitions for tcpsrv class.
  *
- * Copyright 2008 Rainer Gerhards and Adiscon GmbH.
+ * Copyright 2008-2012 Adiscon GmbH.
  *
  * This file is part of rsyslog.
  *
- * Rsyslog is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * Rsyslog is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with Rsyslog.  If not, see <http://www.gnu.org/licenses/>.
- *
- * A copy of the GPL can be found in the file "COPYING" in this distribution.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ * 
+ *       http://www.apache.org/licenses/LICENSE-2.0
+ *       -or-
+ *       see COPYING.ASL20 in the source distribution
+ * 
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 #ifndef INCLUDED_TCPSRV_H
 #define INCLUDED_TCPSRV_H
@@ -56,6 +55,7 @@ struct tcpsrv_s {
 	permittedPeers_t *pPermPeers;/**< driver's permitted peers */
 	sbool bEmitMsgOnClose;	/**< emit an informational message when the remote peer closes connection */
 	sbool bUsingEPoll;	/**< are we in epoll mode (means we do not need to keep track of sessions!) */
+	sbool bUseFlowControl;	/**< use flow control (make light delayable) */
 	int iLstnCurr;		/**< max nbr of listeners currently supported */
 	netstrm_t **ppLstn;	/**< our netstream listners */
 	tcpLstnPortList_t **ppLstnPort; /**< pointer to relevant listen port description */
@@ -80,6 +80,18 @@ struct tcpsrv_s {
 	rsRetVal (*OnSessConstructFinalize)(void*);
 	rsRetVal (*pOnSessDestruct)(void*);
 	rsRetVal (*OnMsgReceive)(tcps_sess_t *, uchar *pszMsg, int iLenMsg); /* submit message callback */
+};
+
+
+/**
+ * The following structure is a set of descriptors that need to be processed.
+ * This set will be the result of the epoll or select call and be used
+ * in the actual request processing stage. It serves as a basis
+ * to run multiple request by concurrent threads. -- rgerhards, 2011-01-24
+ */
+struct tcpsrv_workset_s {
+	int idx;	/**< index into session table (or -1 if listener) */
+	void *pUsr;
 };
 
 
@@ -121,8 +133,10 @@ BEGINinterface(tcpsrv) /* name must also be changed in ENDinterface macro! */
 	rsRetVal (*SetNotificationOnRemoteClose)(tcpsrv_t *pThis, int bNewVal); /* 2009-10-01 */
 	/* added v9 -- rgerhards, 2010-03-01 */
 	rsRetVal (*SetbDisableLFDelim)(tcpsrv_t*, int);
+	/* added v10 -- rgerhards, 2011-04-01 */
+	rsRetVal (*SetUseFlowControl)(tcpsrv_t*, int);
 ENDinterface(tcpsrv)
-#define tcpsrvCURR_IF_VERSION 9 /* increment whenever you change the interface structure! */
+#define tcpsrvCURR_IF_VERSION 10 /* increment whenever you change the interface structure! */
 /* change for v4:
  * - SetAddtlFrameDelim() added -- rgerhards, 2008-12-10
  * - SetInputName() added -- rgerhards, 2008-12-10

@@ -22,24 +22,23 @@
  * NOTE: read comments in module-template.h to understand how this file
  *       works!
  *
- * Copyright 2007, 2009 Rainer Gerhards and Adiscon GmbH.
+ * Copyright 2007-2012 Rainer Gerhards and Adiscon GmbH.
  *
  * This file is part of rsyslog.
  *
- * Rsyslog is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * Rsyslog is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with Rsyslog.  If not, see <http://www.gnu.org/licenses/>.
- *
- * A copy of the GPL can be found in the file "COPYING" in this distribution.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ * 
+ *       http://www.apache.org/licenses/LICENSE-2.0
+ *       -or-
+ *       see COPYING.ASL20 in the source distribution
+ * 
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 #include "config.h"
 #include "rsyslog.h"
@@ -63,7 +62,6 @@ MODULE_TYPE_NOKEEP
  */
 DEF_OMOD_STATIC_DATA
 
-static int bEchoStdout = 0;	/* echo non-failed messages to stdout */
 
 typedef struct _instanceData {
 	enum { MD_SLEEP, MD_FAIL, MD_RANDFAIL, MD_ALWAYS_SUSPEND }
@@ -76,6 +74,17 @@ typedef struct _instanceData {
 	int	iResumeAfter;
 	int	iCurrRetries;
 } instanceData;
+
+typedef struct configSettings_s {
+	int bEchoStdout;	/* echo non-failed messages to stdout */
+} configSettings_t;
+
+SCOPING_SUPPORT; /* must be set AFTER configSettings_t is defined */
+
+BEGINinitConfVars		/* (re)set config variables to default values */
+CODESTARTinitConfVars 
+	cs.bEchoStdout = 0;
+ENDinitConfVars
 
 BEGINcreateInstance
 CODESTARTcreateInstance
@@ -288,7 +297,7 @@ CODE_STD_STRING_REQUESTparseSelectorAct(1)
 		dbgprintf("invalid mode '%s', doing 'sleep 1 0' - fix your config\n", szBuf);
 	}
 
-	pData->bEchoStdout = bEchoStdout;
+	pData->bEchoStdout = cs.bEchoStdout;
 	CHKiRet(cflineParseTemplateName(&p, *ppOMSR, 0, OMSR_NO_RQD_TPL_OPTS,
 				         (uchar*)"RSYSLOG_TraditionalForwardFormat"));
 
@@ -309,10 +318,11 @@ ENDqueryEtryPt
 
 BEGINmodInit()
 CODESTARTmodInit
+SCOPINGmodInit
 	*ipIFVersProvided = CURR_MOD_IF_VERSION; /* we only support the current interface specification */
 CODEmodInit_QueryRegCFSLineHdlr
 	CHKiRet(omsdRegCFSLineHdlr((uchar *)"actionomtestingechostdout", 0, eCmdHdlrBinary, NULL,
-				   &bEchoStdout, STD_LOADABLE_MODULE_ID));
+				   &cs.bEchoStdout, STD_LOADABLE_MODULE_ID));
 	/* we seed the random-number generator in any case... */
 	srand(time(NULL));
 ENDmodInit

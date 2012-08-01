@@ -7,24 +7,23 @@
  *
  * File begun on 2008-07-25 by RGerhards
  *
- * Copyright 2008, 2009 Rainer Gerhards and Adiscon GmbH.
+ * Copyright 2008-2012 Adiscon GmbH.
  *
  * This file is part of rsyslog.
  *
- * Rsyslog is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * Rsyslog is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with Rsyslog.  If not, see <http://www.gnu.org/licenses/>.
- *
- * A copy of the GPL can be found in the file "COPYING" in this distribution.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ * 
+ *       http://www.apache.org/licenses/LICENSE-2.0
+ *       -or-
+ *       see COPYING.ASL20 in the source distribution
+ * 
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 #include "config.h"
 #include <stdio.h>
@@ -255,6 +254,8 @@ finalize_it:
 
 
 /* This function waits until the main queue is drained (size = 0)
+ * To make sure it really is drained, we check three times. Otherwise we
+ * may just see races.
  */
 static rsRetVal
 waitMainQEmpty(tcps_sess_t *pSess)
@@ -264,19 +265,22 @@ waitMainQEmpty(tcps_sess_t *pSess)
 	DEFiRet;
 
 	CHKiRet(diagGetMainMsgQSize(&iMsgQueueSize));
-	while(iMsgQueueSize > 0) {
-		/* DEV DEBUG ONLY if(iPrint++ % 500)
-			printf("imdiag: main msg queue size: %d\n", iMsgQueueSize);
-		*/
-		if(iPrint++ % 500 == 0) 
-			dbgprintf("imdiag sleeping, wait mainq drain, curr size %d\n", iMsgQueueSize);
-		srSleep(0,2);	/* wait a little bit */
-		CHKiRet(diagGetMainMsgQSize(&iMsgQueueSize));
+	while(1) {
 		if(iMsgQueueSize == 0) {
 			/* verify that queue is still empty (else it could just be a race!) */
-			srSleep(1,5);	/* wait a little bit */
+			srSleep(0,250000);/* wait a little bit */
 			CHKiRet(diagGetMainMsgQSize(&iMsgQueueSize));
+			if(iMsgQueueSize == 0) {
+				srSleep(0,500000);/* wait a little bit */
+				CHKiRet(diagGetMainMsgQSize(&iMsgQueueSize));
+			}
 		}
+		if(iMsgQueueSize == 0)
+			break;
+		if(iPrint++ % 500 == 0) 
+			dbgprintf("imdiag sleeping, wait mainq drain, curr size %d\n", iMsgQueueSize);
+		srSleep(0,200000);/* wait a little bit */
+		CHKiRet(diagGetMainMsgQSize(&iMsgQueueSize));
 	}
 
 	CHKiRet(sendResponse(pSess, "mainqueue empty\n"));

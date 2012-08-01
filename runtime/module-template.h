@@ -4,25 +4,25 @@
  *
  * File begun on 2007-07-25 by RGerhards
  *
- * Copyright 2007 Rainer Gerhards and Adiscon GmbH.
+ * Copyright 2007 Adiscon GmbH. This is Adiscon-exclusive code without any other
+ * contributions. *** GPLv3 ***
  *
  * This file is part of the rsyslog runtime library.
  *
- * The rsyslog runtime library is free software: you can redistribute it and/or modify
- * it under the terms of the GNU Lesser General Public License as published by
+ * Rsyslog is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation, either version 3 of the License, or
  * (at your option) any later version.
  *
- * The rsyslog runtime library is distributed in the hope that it will be useful,
+ * Rsyslog is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU Lesser General Public License for more details.
+ * GNU General Public License for more details.
  *
- * You should have received a copy of the GNU Lesser General Public License
- * along with the rsyslog runtime library.  If not, see <http://www.gnu.org/licenses/>.
+ * You should have received a copy of the GNU General Public License
+ * along with Rsyslog.  If not, see <http://www.gnu.org/licenses/>.
  *
  * A copy of the GPL can be found in the file "COPYING" in this distribution.
- * A copy of the LGPL can be found in the file "COPYING.LESSER" in this distribution.
  */
 #ifndef	MODULE_TEMPLATE_H_INCLUDED
 #define	MODULE_TEMPLATE_H_INCLUDED 1
@@ -35,7 +35,7 @@
 /* macro to define standard output-module static data members
  */
 #define DEF_MOD_STATIC_DATA \
-	static __attribute__((unused)) rsRetVal (*omsdRegCFSLineHdlr)();
+	static __attribute__((unused)) rsRetVal (*omsdRegCFSLineHdlr)(uchar *pCmdName, int bChainingPermitted, ecslCmdHdrlType eType, rsRetVal (*pHdlr)(), void *pData, void *pOwnerCookie);
 
 #define DEF_OMOD_STATIC_DATA \
 	DEF_MOD_STATIC_DATA \
@@ -316,6 +316,50 @@ static rsRetVal tryResume(instanceData __attribute__((unused)) *pData)\
 }
 
 
+/* Config scoping system.
+ * save current config scope and start a new one. Note that we do NOT implement a
+ * stack. Exactly one scope can be saved.
+ * We assume standard naming conventions (local confgSettings_t holds all
+ * config settings and MUST have been defined before this macro is being used!).
+ * Note that initConfVars() must be defined locally as well.
+ */
+#define SCOPING_SUPPORT \
+static rsRetVal initConfVars(void);\
+static configSettings_t cs;				/* our current config settings */ \
+static configSettings_t cs_save;			/* our saved (scope!) config settings */ \
+static rsRetVal __attribute__((unused)) newScope(void) \
+{ \
+	DEFiRet; \
+	memcpy(&cs_save, &cs, sizeof(cs)); \
+	iRet = initConfVars(); \
+	RETiRet; \
+} \
+static rsRetVal __attribute__((unused)) restoreScope(void) \
+{ \
+	DEFiRet; \
+	memcpy(&cs, &cs_save, sizeof(cs)); \
+	RETiRet; \
+}
+/* initConfVars()
+ * This entry point is called to check if a module can resume operations. This
+ * happens when a module requested that it be suspended. In suspended state,
+ * the engine periodically tries to resume the module. If that succeeds, normal
+ * processing continues. If not, the module will not be called unless a
+ * tryResume() call succeeds.
+ * Returns RS_RET_OK, if resumption succeeded, RS_RET_SUSPENDED otherwise
+ * rgerhard, 2007-08-02
+ */
+#define BEGINinitConfVars \
+static rsRetVal initConfVars(void)\
+{\
+	DEFiRet;
+
+#define CODESTARTinitConfVars 
+
+#define ENDinitConfVars \
+	RETiRet;\
+}
+	
 
 /* queryEtryPt()
  */
@@ -484,6 +528,10 @@ rsRetVal modInit##uniqName(int iIFVersRequested __attribute__((unused)), int *ip
 	} \
 	/* now get the obj interface so that we can access other objects */ \
 	CHKiRet(pObjGetObjInterface(&obj));
+
+/* do those initializations necessary for scoping */
+#define SCOPINGmodInit \
+	initConfVars();
 
 #define ENDmodInit \
 finalize_it:\

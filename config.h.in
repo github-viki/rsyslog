@@ -3,6 +3,9 @@
 /* Defined if debug mode is enabled (its easier to check). */
 #undef DEBUG
 
+/* Indicator that GnuTLS is present */
+#undef ENABLE_GNUTLS
+
 /* Regular expressions support enabled. */
 #undef FEATURE_REGEXP
 
@@ -115,6 +118,9 @@
 
 /* Define to 1 if you have the `mkdir' function. */
 #undef HAVE_MKDIR
+
+/* mysql_library_init available */
+#undef HAVE_MYSQL_LIBRARY_INIT
 
 /* Define to 1 if you have the <netdb.h> header file. */
 #undef HAVE_NETDB_H

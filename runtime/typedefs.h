@@ -79,6 +79,7 @@ typedef struct parserList_s parserList_t;
 typedef struct strgen_s strgen_t;
 typedef struct strgenList_s strgenList_t;
 typedef struct statsobj_s statsobj_t;
+typedef struct nsd_epworkset_s nsd_epworkset_t;
 typedef rsRetVal (*prsf_t)(struct vmstk_s*, int);	/* pointer to a RainerScript function */
 typedef uint64 qDeqID;	/* queue Dequeue order ID. 32 bits is considered dangerously few */
 
@@ -127,8 +128,40 @@ typedef enum {
 	FIOP_ISEQUAL  = 2,	/* is (exactly) equal? */
 	FIOP_STARTSWITH = 3,	/* starts with a string? */
 	FIOP_REGEX = 4,		/* matches a (BRE) regular expression? */
-	FIOP_EREREGEX = 5	/* matches a ERE regular expression? */
+	FIOP_EREREGEX = 5,	/* matches a ERE regular expression? */
+	FIOP_ISEMPTY = 6	/* string empty <=> strlen(s) == 0 ?*/
 } fiop_t;
+
+/* types of configuration handlers
+ */
+typedef enum cslCmdHdlrType {
+	eCmdHdlrInvalid = 0,		/* invalid handler type - indicates a coding error */
+	eCmdHdlrCustomHandler,		/* custom handler, just call handler function */
+	eCmdHdlrUID,
+	eCmdHdlrGID,
+	eCmdHdlrBinary,
+	eCmdHdlrFileCreateMode,
+	eCmdHdlrInt,
+	eCmdHdlrSize,
+	eCmdHdlrGetChar,
+	eCmdHdlrFacility,
+	eCmdHdlrSeverity,
+	eCmdHdlrGetWord
+} ecslCmdHdrlType;
+
+
+/* the next type describes $Begin .. $End block object types
+ */
+typedef enum cslConfObjType {
+	eConfObjGlobal = 0,	/* global directives */
+	eConfObjAction,		/* action-specific directives */
+	/* now come states that indicate that we wait for a block-end. These are
+	 * states that permit us to do some safety checks and they hopefully ease
+	 * migration to a "real" parser/grammar.
+	 */
+	eConfObjActionWaitEnd,
+	eConfObjAlways		/* always valid, very special case (guess $End only!) */
+} ecslConfObjType;
 
 
 /* multi-submit support.

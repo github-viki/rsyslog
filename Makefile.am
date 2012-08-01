@@ -60,7 +60,9 @@ EXTRA_DIST = \
 	slackware/rc.rsyslogd \
 	contrib/README \
 	rsyslog.conf \
+	COPYING \
 	COPYING.LESSER \
+	COPYING.ASL20 \
 	contrib/gnutls/ca.pem \
 	contrib/gnutls/cert.pem \
 	contrib/gnutls/key.pem \
@@ -180,6 +182,10 @@ if ENABLE_IMPTCP
 SUBDIRS += plugins/imptcp
 endif
 
+if ENABLE_IMTTCP
+SUBDIRS += plugins/imttcp
+endif
+
 if ENABLE_IMDIAG
 SUBDIRS += plugins/imdiag
 endif
@@ -194,6 +200,10 @@ endif
 
 if ENABLE_RFC3195
 SUBDIRS += plugins/im3195
+endif
+
+if ENABLE_MMNORMALIZE
+SUBDIRS += plugins/mmnormalize
 endif
 
 if ENABLE_ORACLE
@@ -216,6 +226,7 @@ SUBDIRS += tests
 # in a make distcheck is so that we detect code that accidently was not updated
 # when some global update happened.
 DISTCHECK_CONFIGURE_FLAGS=	--enable-gssapi_krb5 \
+				--enable-gnutls \
 				--enable-imfile \
 				--enable-snmp \
 				--enable-pgsql \
@@ -233,10 +244,10 @@ DISTCHECK_CONFIGURE_FLAGS=	--enable-gssapi_krb5 \
 				--enable-omprog \
 				--enable-imdiag \
 				--enable-imptcp \
+				--enable-imttcp \
 				--enable-omuxsock \
 				--enable-extended-tests \
 				--enable-impstats \
-				--enable-imptcp \
 				--enable-memcheck \
 				--enable-pmaixforwardedfrom \
 				--enable-pmcisconames \

@@ -36,7 +36,7 @@ rsyslogd_SOURCES = \
 	\
 	../dirty.h
 rsyslogd_CPPFLAGS =  $(PTHREADS_CFLAGS) $(RSRT_CFLAGS)
-rsyslogd_LDADD = $(ZLIB_LIBS) $(PTHREADS_LIBS) $(RSRT_LIBS) $(SOL_LIBS)
+rsyslogd_LDADD = $(ZLIB_LIBS) $(PTHREADS_LIBS) $(RSRT_LIBS) $(SOL_LIBS) $(LIBEE_LIBS) $(LIBLOGNORM_LIBS)
 rsyslogd_LDFLAGS = -export-dynamic
 
 if ENABLE_DIAGTOOLS
@@ -47,4 +47,5 @@ zpipe_LDADD = -lz
 msggen_SOURCES = msggen.c
 endif
 
-EXTRA_DIST = $(man_MANS)
+EXTRA_DIST = $(man_MANS) \
+	recover_qi.pl

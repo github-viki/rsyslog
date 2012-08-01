@@ -62,6 +62,7 @@ host_triplet = @host@
 @ENABLE_IMDIAG_TRUE@@ENABLE_TESTBENCH_TRUE@	imtcp_conndrop.sh \
 @ENABLE_IMDIAG_TRUE@@ENABLE_TESTBENCH_TRUE@	imtcp_addtlframedelim.sh \
 @ENABLE_IMDIAG_TRUE@@ENABLE_TESTBENCH_TRUE@	sndrcv.sh \
+@ENABLE_IMDIAG_TRUE@@ENABLE_TESTBENCH_TRUE@	sndrcv_failover.sh \
 @ENABLE_IMDIAG_TRUE@@ENABLE_TESTBENCH_TRUE@	sndrcv_gzip.sh \
 @ENABLE_IMDIAG_TRUE@@ENABLE_TESTBENCH_TRUE@	sndrcv_udp.sh \
 @ENABLE_IMDIAG_TRUE@@ENABLE_TESTBENCH_TRUE@	sndrcv_udp_nonstdpt.sh \
@@ -93,15 +94,9 @@ host_triplet = @host@
 @ENABLE_IMDIAG_TRUE@@ENABLE_TESTBENCH_TRUE@	imuxsock_logger_root.sh \
 @ENABLE_IMDIAG_TRUE@@ENABLE_TESTBENCH_TRUE@	imuxsock_traillf_root.sh \
 @ENABLE_IMDIAG_TRUE@@ENABLE_TESTBENCH_TRUE@	imuxsock_ccmiddle_root.sh \
-@ENABLE_IMDIAG_TRUE@@ENABLE_TESTBENCH_TRUE@	discard-rptdmsg.sh \
-@ENABLE_IMDIAG_TRUE@@ENABLE_TESTBENCH_TRUE@	discard-allmark.sh \
-@ENABLE_IMDIAG_TRUE@@ENABLE_TESTBENCH_TRUE@	discard.sh \
-@ENABLE_IMDIAG_TRUE@@ENABLE_TESTBENCH_TRUE@	failover-basic.sh \
-@ENABLE_IMDIAG_TRUE@@ENABLE_TESTBENCH_TRUE@	failover-rptd.sh \
-@ENABLE_IMDIAG_TRUE@@ENABLE_TESTBENCH_TRUE@	failover-no-rptd.sh \
-@ENABLE_IMDIAG_TRUE@@ENABLE_TESTBENCH_TRUE@	failover-no-basic.sh \
-@ENABLE_IMDIAG_TRUE@@ENABLE_TESTBENCH_TRUE@	rcvr_fail_restore.sh \
-@ENABLE_IMDIAG_TRUE@@ENABLE_TESTBENCH_TRUE@	linkedlistqueue.sh
+@ENABLE_IMDIAG_TRUE@@ENABLE_TESTBENCH_TRUE@	udp-msgreduc-vg.sh \
+@ENABLE_IMDIAG_TRUE@@ENABLE_TESTBENCH_TRUE@	udp-msgreduc-orgmsg-vg.sh \
+@ENABLE_IMDIAG_TRUE@@ENABLE_TESTBENCH_TRUE@	queue-persist.sh 
 
 @ENABLE_TESTBENCH_TRUE@@HAVE_VALGRIND_TRUE@am__append_2 = \
 @ENABLE_TESTBENCH_TRUE@@HAVE_VALGRIND_TRUE@	discard-rptdmsg-vg.sh \
@@ -130,6 +125,14 @@ host_triplet = @host@
 @ENABLE_IMPTCP_TRUE@@ENABLE_TESTBENCH_TRUE@	imptcp_addtlframedelim.sh \
 @ENABLE_IMPTCP_TRUE@@ENABLE_TESTBENCH_TRUE@	imptcp_conndrop.sh 
 
+
+# TODO: re-enable in newer version
+#TESTS +=  \
+#	#sndrcv_tls_anon.sh \
+#	#sndrcv_tls_anon_rebind.sh \
+#	#imtcp-tls-basic.sh
+# This test does not work on v5 as we keep DH params
+#TESTS += manytcp-too-few-tls.sh
 @ENABLE_OMUXSOCK_TRUE@@ENABLE_TESTBENCH_TRUE@am__append_7 = uxsock_simple.sh
 @ENABLE_OMUDPSPOOF_TRUE@@ENABLE_TESTBENCH_TRUE@am__append_8 = sndrcv_omudpspoof.sh \
 @ENABLE_OMUDPSPOOF_TRUE@@ENABLE_TESTBENCH_TRUE@	 sndrcv_omudpspoof_nonstdpt.sh
@@ -152,6 +155,7 @@ host_triplet = @host@
 @ENABLE_EXTENDED_TESTS_TRUE@@ENABLE_TESTBENCH_TRUE@am__append_11 = random.sh 
 @ENABLE_IMFILE_TRUE@@ENABLE_TESTBENCH_TRUE@am__append_12 = imfile-basic.sh
 @ENABLE_IMFILE_TRUE@@ENABLE_TESTBENCH_TRUE@@HAVE_VALGRIND_TRUE@am__append_13 = imfile-basic-vg.sh
+@ENABLE_GNUTLS_TRUE@am__append_14 = -lgcrypt
 subdir = tests
 DIST_COMMON = README $(srcdir)/Makefile.am $(srcdir)/Makefile.in \
 	INSTALL
@@ -217,9 +221,10 @@ syslog_caller_DEPENDENCIES = $(am__DEPENDENCIES_1)
 am_syslog_inject_OBJECTS = syslog_inject.$(OBJEXT)
 syslog_inject_OBJECTS = $(am_syslog_inject_OBJECTS)
 syslog_inject_DEPENDENCIES = $(am__DEPENDENCIES_1)
-am_tcpflood_OBJECTS = tcpflood.$(OBJEXT)
+am_tcpflood_OBJECTS = tcpflood-tcpflood.$(OBJEXT)
 tcpflood_OBJECTS = $(am_tcpflood_OBJECTS)
-tcpflood_DEPENDENCIES = $(am__DEPENDENCIES_1)
+tcpflood_DEPENDENCIES = $(am__DEPENDENCIES_1) $(am__DEPENDENCIES_1) \
+	$(am__DEPENDENCIES_1) $(am__DEPENDENCIES_1)
 am_uxsockrcvr_OBJECTS = uxsockrcvr.$(OBJEXT)
 uxsockrcvr_OBJECTS = $(am_uxsockrcvr_OBJECTS)
 uxsockrcvr_DEPENDENCIES = $(am__DEPENDENCIES_1)
@@ -309,13 +314,21 @@ LD = @LD@
 LDFLAGS = @LDFLAGS@
 LIBDBI_CFLAGS = @LIBDBI_CFLAGS@
 LIBDBI_LIBS = @LIBDBI_LIBS@
+LIBEE_CFLAGS = @LIBEE_CFLAGS@
+LIBEE_LIBS = @LIBEE_LIBS@
+LIBESTR_CFLAGS = @LIBESTR_CFLAGS@
+LIBESTR_LIBS = @LIBESTR_LIBS@
 LIBLOGGING_CFLAGS = @LIBLOGGING_CFLAGS@
 LIBLOGGING_LIBS = @LIBLOGGING_LIBS@
+LIBLOGNORM_CFLAGS = @LIBLOGNORM_CFLAGS@
+LIBLOGNORM_LIBS = @LIBLOGNORM_LIBS@
 LIBOBJS = @LIBOBJS@
 LIBS = @LIBS@
 LIBTOOL = @LIBTOOL@
 LIPO = @LIPO@
 LN_S = @LN_S@
+LOGNORM_CFLAGS = @LOGNORM_CFLAGS@
+LOGNORM_LIBS = @LOGNORM_LIBS@
 LTLIBOBJS = @LTLIBOBJS@
 MAKEINFO = @MAKEINFO@
 MKDIR_P = @MKDIR_P@
@@ -421,6 +434,12 @@ DISTCLEANFILES = rsyslog.pid
 test_files = testbench.h runtime-dummy.c
 EXTRA_DIST = 1.rstest 2.rstest 3.rstest err1.rstest \
 	   validation-run.sh \
+	   testsuites/x.509/ca.pem \
+	   testsuites/x.509/ca-key.pem \
+	   testsuites/x.509/client-cert.pem \
+	   testsuites/x.509/client-key.pem \
+	   testsuites/x.509/machine-cert.pem \
+	   testsuites/x.509/machine-key.pem \
 	   testsuites/invalid.conf \
 	   testsuites/valid.conf \
 	   cfg.sh \
@@ -517,8 +536,14 @@ EXTRA_DIST = 1.rstest 2.rstest 3.rstest err1.rstest \
 	   testsuites/da-mainmsg-q.conf \
 	   diskqueue-fsync.sh \
 	   testsuites/diskqueue-fsync.conf \
+	   imtcp-tls-basic.sh \
+	   testsuites/imtcp-tls-basic.conf \
 	   imtcp-multiport.sh \
 	   testsuites/imtcp-multiport.conf \
+	   udp-msgreduc-orgmsg-vg.sh \
+	   testsuites/udp-msgreduc-orgmsg-vg.conf \
+	   udp-msgreduc-vg.sh \
+	   testsuites/udp-msgreduc-vg.conf \
 	   manytcp.sh \
 	   testsuites/manytcp.conf \
 	   manyptcp.sh \
@@ -555,6 +580,10 @@ EXTRA_DIST = 1.rstest 2.rstest 3.rstest err1.rstest \
 	   failover-basic.sh \
 	   failover-basic-vg.sh \
 	   testsuites/failover-basic.conf \
+	   failover-async.sh \
+	   testsuites/failover-async.conf \
+	   failover-double.sh \
+	   testsuites/failover-double.conf \
 	   discard-rptdmsg.sh \
 	   discard-rptdmsg-vg.sh \
 	   testsuites/discard-rptdmsg.conf \
@@ -577,6 +606,10 @@ EXTRA_DIST = 1.rstest 2.rstest 3.rstest err1.rstest \
 	   threadingmqaq.sh \
 	   testsuites/threadingmqaq.conf \
 	   sndrcv_drvr.sh \
+	   sndrcv_drvr_noexit.sh \
+	   sndrcv_failover.sh \
+	   testsuites/sndrcv_failover_sender.conf \
+	   testsuites/sndrcv_failover_rcvr.conf \
 	   sndrcv.sh \
 	   testsuites/sndrcv_sender.conf \
 	   testsuites/sndrcv_rcvr.conf \
@@ -694,13 +727,24 @@ EXTRA_DIST = 1.rstest 2.rstest 3.rstest err1.rstest \
 	   testsuites/mysql-asyn.conf \
 	   cfg.sh
 
+
+# TODO: re-enable
+#sndrcv_tls_anon_rebind.sh \
+#testsuites/sndrcv_tls_anon_rebind_sender.conf \
+#testsuites/sndrcv_tls_anon_rebind_rcvr.conf \
+#sndrcv_tls_anon.sh \
+#testsuites/sndrcv_tls_anon_sender.conf \
+#testsuites/sndrcv_tls_anon_rcvr.conf \
+#
 ourtail_SOURCES = ourtail.c
 msleep_SOURCES = msleep.c
 chkseq_SOURCES = chkseq.c
 uxsockrcvr_SOURCES = uxsockrcvr.c
 uxsockrcvr_LDADD = $(SOL_LIBS)
 tcpflood_SOURCES = tcpflood.c
-tcpflood_LDADD = $(SOL_LIBS)
+tcpflood_CPPFLAGS = $(PTHREADS_CFLAGS) $(GNUTLS_CFLAGS)
+tcpflood_LDADD = $(SOL_LIBS) $(PTHREADS_LIBS) $(GNUTLS_LIBS) \
+	$(am__append_14)
 syslog_caller_SOURCES = syslog_caller.c
 syslog_caller_LDADD = $(SOL_LIBS)
 syslog_inject_SOURCES = syslog_inject.c
@@ -825,7 +869,7 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/rt_init-runtime-dummy.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/syslog_caller.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/syslog_inject.Po@am__quote@
-@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/tcpflood.Po@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/tcpflood-tcpflood.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/uxsockrcvr.Po@am__quote@
 
 .c.o:
@@ -931,6 +975,22 @@ rt_init-runtime-dummy.obj: runtime-dummy.c
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	source='runtime-dummy.c' object='rt_init-runtime-dummy.obj' libtool=no @AMDEPBACKSLASH@
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
 @am__fastdepCC_FALSE@	$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(rt_init_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o rt_init-runtime-dummy.obj `if test -f 'runtime-dummy.c'; then $(CYGPATH_W) 'runtime-dummy.c'; else $(CYGPATH_W) '$(srcdir)/runtime-dummy.c'; fi`
+
+tcpflood-tcpflood.o: tcpflood.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(tcpflood_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT tcpflood-tcpflood.o -MD -MP -MF $(DEPDIR)/tcpflood-tcpflood.Tpo -c -o tcpflood-tcpflood.o `test -f 'tcpflood.c' || echo '$(srcdir)/'`tcpflood.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/tcpflood-tcpflood.Tpo $(DEPDIR)/tcpflood-tcpflood.Po
+@am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='tcpflood.c' object='tcpflood-tcpflood.o' libtool=no @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(tcpflood_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o tcpflood-tcpflood.o `test -f 'tcpflood.c' || echo '$(srcdir)/'`tcpflood.c
+
+tcpflood-tcpflood.obj: tcpflood.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(tcpflood_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT tcpflood-tcpflood.obj -MD -MP -MF $(DEPDIR)/tcpflood-tcpflood.Tpo -c -o tcpflood-tcpflood.obj `if test -f 'tcpflood.c'; then $(CYGPATH_W) 'tcpflood.c'; else $(CYGPATH_W) '$(srcdir)/tcpflood.c'; fi`
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/tcpflood-tcpflood.Tpo $(DEPDIR)/tcpflood-tcpflood.Po
+@am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='tcpflood.c' object='tcpflood-tcpflood.obj' libtool=no @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(tcpflood_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o tcpflood-tcpflood.obj `if test -f 'tcpflood.c'; then $(CYGPATH_W) 'tcpflood.c'; else $(CYGPATH_W) '$(srcdir)/tcpflood.c'; fi`
 
 mostlyclean-libtool:
 	-rm -f *.lo
@@ -1231,6 +1291,17 @@ uninstall-am:
 	mostlyclean-generic mostlyclean-libtool pdf pdf-am ps ps-am \
 	tags uninstall uninstall-am
 
+@ENABLE_IMDIAG_TRUE@@ENABLE_TESTBENCH_TRUE@	discard-rptdmsg.sh \
+@ENABLE_IMDIAG_TRUE@@ENABLE_TESTBENCH_TRUE@	discard-allmark.sh \
+@ENABLE_IMDIAG_TRUE@@ENABLE_TESTBENCH_TRUE@	discard.sh \
+@ENABLE_IMDIAG_TRUE@@ENABLE_TESTBENCH_TRUE@	failover-async.sh \
+@ENABLE_IMDIAG_TRUE@@ENABLE_TESTBENCH_TRUE@	failover-double.sh \
+@ENABLE_IMDIAG_TRUE@@ENABLE_TESTBENCH_TRUE@	failover-basic.sh \
+@ENABLE_IMDIAG_TRUE@@ENABLE_TESTBENCH_TRUE@	failover-rptd.sh \
+@ENABLE_IMDIAG_TRUE@@ENABLE_TESTBENCH_TRUE@	failover-no-rptd.sh \
+@ENABLE_IMDIAG_TRUE@@ENABLE_TESTBENCH_TRUE@	failover-no-basic.sh \
+@ENABLE_IMDIAG_TRUE@@ENABLE_TESTBENCH_TRUE@	rcvr_fail_restore.sh \
+@ENABLE_IMDIAG_TRUE@@ENABLE_TESTBENCH_TRUE@	linkedlistqueue.sh
 
 # Tell versions [3.59,3.63) of GNU make to not export all variables.
 # Otherwise a system limit (for SysV at least) may be exceeded.

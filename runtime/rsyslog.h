@@ -137,7 +137,10 @@ typedef uintTiny	propid_t;
 #define PROP_SYS_QHOUR			156
 #define PROP_SYS_MINUTE			157
 #define PROP_SYS_MYHOSTNAME		158
+#define PROP_CEE			200
+#define PROP_CEE_ALL_JSON		201
 #define PROP_SYS_BOM			159
+#define PROP_SYS_UPTIME			160
 
 
 /* The error codes below are orginally "borrowed" from
@@ -332,6 +335,11 @@ enum rsRetVal_				/** return value. All methods return this if not specified oth
 	RS_RET_TIMEOUT = -2164,		/**< timeout occured during operation */
 	RS_RET_RCV_ERR = -2165,		/**< error occured during socket rcv operation */
 	RS_RET_NO_SOCK_CONFIGURED = -2166, /**< no socket (name) was configured where one is required */
+	RS_RET_CONF_NOT_GLBL = -2167,	/**< $Begin not in global scope */
+	RS_RET_CONF_IN_GLBL = -2168,	/**< $End when in global scope */
+	RS_RET_CONF_INVLD_END = -2169,	/**< $End for wrong conf object (probably nesting error) */
+	RS_RET_CONF_INVLD_SCOPE = -2170,/**< config statement not valid in current scope (e.g. global stmt in action block) */
+	RS_RET_CONF_END_NO_ACT = -2171,	/**< end of action block, but no actual action specified */
 	RS_RET_NO_LSTN_DEFINED = -2172, /**< no listener defined (e.g. inside an input module) */
 	RS_RET_EPOLL_CR_FAILED = -2173, /**< epoll_create() failed */
 	RS_RET_EPOLL_CTL_FAILED = -2174, /**< epoll_ctl() failed */
@@ -342,7 +350,15 @@ enum rsRetVal_				/** return value. All methods return this if not specified oth
 	RS_RET_ERR_HDFS_OPEN = -2179, /**< error during hdfsOpen (e.g. file does not exist) */
 	RS_RET_FILE_NOT_SPECIFIED = -2180, /**< file name not configured where this was required */
 	RS_RET_ERR_WRKDIR = -2181, /**< problems with the rsyslog working directory */
+	RS_RET_WRN_WRKDIR = -2182, /**< correctable problems with the rsyslog working directory */
+	RS_RET_OUTDATED_STMT = -2184, /**<  some outdated statement/functionality is being used in conf file */
+	RS_RET_MISSING_WHITESPACE = -2185, /**<  whitespace is missing in some config construct */
 
+	RS_RET_INVLD_CONF_OBJ= -2200,	/**< invalid config object (e.g. $Begin conf statement) */
+	RS_RET_ERR_LIBEE_INIT = -2201,	/**< cannot obtain libee ctx */
+	RS_RET_ERR_LIBLOGNORM_INIT = -2202,/**< cannot obtain liblognorm ctx */
+	RS_RET_ERR_LIBLOGNORM_SAMPDB_LOAD = -2203,/**< liblognorm sampledb load failed */
+	RS_RET_CONF_RQRD_PARAM_MISSING = -2208,/**< required parameter in config object is missing */
 	/* RainerScript error messages (range 1000.. 1999) */
 	RS_RET_SYSVAR_NOT_FOUND = 1001, /**< system variable could not be found (maybe misspelled) */
 
@@ -466,6 +482,13 @@ rsRetVal rsrtInit(char **ppErrObj, obj_if_t *pObjIF);
 rsRetVal rsrtExit(void);
 int rsrtIsInit(void);
 rsRetVal rsrtSetErrLogger(rsRetVal (*errLogger)(int, uchar*));
+
+/* this define below is (later) intended to be used to implement empty
+ * structs. TODO: check if compilers supports this and, if not, define
+ * a dummy variable. This requires review of where in code empty structs
+ * are already defined. -- rgerhards, 2010-07-26
+ */
+#define EMPTY_STRUCT
 
 #endif /* multi-include protection */
 /* vim:set ai:

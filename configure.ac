@@ -2,7 +2,7 @@
 # Process this file with autoconf to produce a configure script.
 
 AC_PREREQ(2.61)
-AC_INIT([rsyslog],[5.8.1],[rsyslog@lists.adiscon.com])
+AC_INIT([rsyslog],[6.2.2],[rsyslog@lists.adiscon.com])
 AM_INIT_AUTOMAKE
 
 m4_ifdef([AM_SILENT_RULES], [AM_SILENT_RULES([yes])])
@@ -34,6 +34,10 @@ AC_PROG_LIBTOOL
 AC_CANONICAL_HOST
 
 PKG_PROG_PKG_CONFIG
+
+# modules we require
+PKG_CHECK_MODULES(LIBESTR, libestr >= 0.1.0)
+PKG_CHECK_MODULES(LIBEE, libee >= 0.3.1)
 
 case "${host}" in
   *-*-linux*)
@@ -514,8 +518,24 @@ if test "x$enable_mysql" = "xyes"; then
     [AC_MSG_FAILURE([MySQL library is missing])],
     [`mysql_config --libs`]
   )
+  AC_MSG_CHECKING(if we have mysql_library_init)
+  save_CFLAGS="$CFLAGS"
+  CFLAGS="$CFLAGS $MYSQL_CFLAGS"
+  save_LIBS="$LIBS"
+  LIBS="$LIBS $MYSQL_LIBS"
+  AC_TRY_LINK(
+    [#include <mysql.h>
+     #include <stdio.h>],
+    [mysql_library_init(0, NULL, NULL)],
+    [have_mysql_library_init=yes],
+    [have_mysql_library_init=no])
+  CFLAGS="$save_CFLAGS"
+  LIBS="$save_LIBS"
 fi
 AM_CONDITIONAL(ENABLE_MYSQL, test x$enable_mysql = xyes)
+if test "$have_mysql_library_init" = "yes"; then
+  AC_DEFINE([HAVE_MYSQL_LIBRARY_INIT], [1], [mysql_library_init available])
+fi
 AC_SUBST(MYSQL_CFLAGS)
 AC_SUBST(MYSQL_LIBS)
 
@@ -681,6 +701,7 @@ AC_ARG_ENABLE(gnutls,
 )
 if test "x$enable_gnutls" = "xyes"; then
 	PKG_CHECK_MODULES(GNUTLS, gnutls >= 1.4.0)
+	AC_DEFINE([ENABLE_GNUTLS], [1], [Indicator that GnuTLS is present])
 fi
 AM_CONDITIONAL(ENABLE_GNUTLS, test x$enable_gnutls = xyes)
 AC_SUBST(GNUTLS_CFLAGS)
@@ -772,7 +793,7 @@ AM_CONDITIONAL(ENABLE_MAIL, test x$enable_mail = xyes)
 # would complicate things if we first needed to tell them how to enable imdiag.
 # rgerhards, 2008-07-25
 AC_ARG_ENABLE(imdiag,
-        [AS_HELP_STRING([--enable-imdiag],[Enable imdiag @<:@default=yes@:>@])],
+        [AS_HELP_STRING([--enable-imdiag],[Enable imdiag @<:@default=no@:>@])],
         [case "${enableval}" in
          yes) enable_imdiag="yes" ;;
           no) enable_imdiag="no" ;;
@@ -781,6 +802,24 @@ AC_ARG_ENABLE(imdiag,
         [enable_imdiag=no]
 )
 AM_CONDITIONAL(ENABLE_IMDIAG, test x$enable_imdiag = xyes)
+
+
+# mmnormalize
+AC_ARG_ENABLE(mmnormalize,
+        [AS_HELP_STRING([--enable-mmnormalize],[Enable building mmnormalize support @<:@default=no@:>@])],
+        [case "${enableval}" in
+         yes) enable_mmnormalize="yes" ;;
+          no) enable_mmnormalize="no" ;;
+           *) AC_MSG_ERROR(bad value ${enableval} for --enable-mmnormalize) ;;
+         esac],
+        [enable_mmnormalize=no]
+)
+if test "x$enable_mmnormalize" = "xyes"; then
+	PKG_CHECK_MODULES(LIBLOGNORM, lognorm >= 0.3.1)
+fi
+AM_CONDITIONAL(ENABLE_MMNORMALIZE, test x$enable_mmnormalize = xyes)
+AC_SUBST(LOGNORM_CFLAGS)
+AC_SUBST(LOGNORM_LIBS)
 
 
 # RELP support
@@ -869,6 +908,19 @@ AC_ARG_ENABLE(imptcp,
         [enable_imptcp=no]
 )
 AM_CONDITIONAL(ENABLE_IMPTCP, test x$enable_imptcp = xyes)
+
+
+# settings for the ttcp input module
+AC_ARG_ENABLE(imttcp,
+        [AS_HELP_STRING([--enable-imttcp],[threaded plain tcp input module enabled @<:@default=no@:>@])],
+        [case "${enableval}" in
+         yes) enable_imttcp="yes" ;;
+          no) enable_imttcp="no" ;;
+           *) AC_MSG_ERROR(bad value ${enableval} for --enable-imttcp) ;;
+         esac],
+        [enable_imttcp=no]
+)
+AM_CONDITIONAL(ENABLE_IMTTCP, test x$enable_imttcp = xyes)
 
 
 # settings for the pstats input module
@@ -1083,16 +1135,16 @@ AM_CONDITIONAL(ENABLE_CUST1, test x$enable_cust1 = xyes)
 
 # A custom strgen that also serves as a sample of how to do
 # SQL-generating strgen's
-AC_ARG_ENABLE(smcustbindcdr,
-        [AS_HELP_STRING([--enable-smcustbindcdr],[Compiles smcustbindcdr module @<:@default=no@:>@])],
+AC_ARG_ENABLE(sm_cust_bindcdr,
+        [AS_HELP_STRING([--enable-sm_cust_bindcdr],[Compiles sm_cust_bindcdr module @<:@default=no@:>@])],
         [case "${enableval}" in
-         yes) enable_smcustbindcdr="yes" ;;
-          no) enable_smcustbindcdr="no" ;;
-           *) AC_MSG_ERROR(bad value ${enableval} for --enable-smcustbindcdr) ;;
+         yes) enable_sm_cust_bindcdr="yes" ;;
+          no) enable_sm_cust_bindcdr="no" ;;
+           *) AC_MSG_ERROR(bad value ${enableval} for --enable-sm_cust_bindcdr) ;;
          esac],
-        [enable_smcustbindcdr=no]
+        [enable_sm_cust_bindcdr=no]
 )
-AM_CONDITIONAL(ENABLE_SMCUSTBINDCDR, test x$enable_smcustbindcdr = xyes)
+AM_CONDITIONAL(ENABLE_SMCUSTBINDCDR, test x$enable_sm_cust_bindcdr = xyes)
 
 
 # settings for the template input module; copy and modify this code
@@ -1165,6 +1217,25 @@ AC_ARG_ENABLE(omhdfs,
 AM_CONDITIONAL(ENABLE_OMHDFS, test x$enable_omhdfs = xyes)
 
 
+#MONGODB SUPPORT
+
+AC_ARG_ENABLE(ommongodb,
+        [AS_HELP_STRING([--enable-ommongodb],[Compiles ommongodb template module @<:@default=no@:>@])],
+        [case "${enableval}" in
+         yes) enable_ommongodb="yes" ;;
+          no) enable_ommongodb="no" ;;
+           *) AC_MSG_ERROR(bad value ${enableval} for --enable-ommongodb) ;;
+         esac],
+        [enable_ommongodb=no]
+)
+#
+# you may want to do some library checks here - see snmp, mysql, pgsql modules
+# for samples
+#
+AM_CONDITIONAL(ENABLE_OMMONGODB, test x$enable_ommongodb = xyes)
+# end of copy template - be sure to search for omtemplate to find everything!
+
+
 AC_CONFIG_FILES([Makefile \
 		runtime/Makefile \
 		tools/Makefile \
@@ -1192,6 +1263,7 @@ AC_CONFIG_FILES([Makefile \
 		plugins/imfile/Makefile \
 		plugins/imsolaris/Makefile \
 		plugins/imptcp/Makefile \
+		plugins/imttcp/Makefile \
 		plugins/impstats/Makefile \
 		plugins/imrelp/Makefile \
 		plugins/imdiag/Makefile \
@@ -1205,6 +1277,7 @@ AC_CONFIG_FILES([Makefile \
 		plugins/omsnmp/Makefile \
 		plugins/omoracle/Makefile \
 		plugins/omudpspoof/Makefile \
+		plugins/mmnormalize/Makefile \
 		plugins/sm_cust_bindcdr/Makefile \
 		plugins/mmsnmptrapd/Makefile \
 		plugins/cust1/Makefile \
@@ -1228,6 +1301,7 @@ echo
 echo "---{ input plugins }---"
 echo "    Klog functionality enabled:               $enable_klog ($os_type)"
 echo "    plain tcp input module enabled:           $enable_imptcp"
+echo "    threaded plain tcp input module enabled:  $enable_imttcp"
 echo "    imdiag enabled:                           $enable_imdiag"
 echo "    file input module enabled:                $enable_imfile"
 echo "    Solaris input module enabled:             $enable_imsolaris"
@@ -1237,6 +1311,7 @@ echo
 echo "---{ output plugins }---"
 echo "    Mail support enabled:                     $enable_mail"
 echo "    omprog module will be compiled:           $enable_omprog"
+echo "    output mongodb module will be compiled:   $enable_ommongodb"
 echo "    omstdout module will be compiled:         $enable_omstdout"
 echo "    omhdfs module will be compiled:           $enable_omhdfs"
 echo "    omruleset module will be compiled:        $enable_omruleset"
@@ -1253,6 +1328,7 @@ echo "    pmaixforwardedfrom module w.be compiled:  $enable_pmaixforwardedfrom"
 echo "    pmsnare module will be compiled:          $enable_pmsnare"
 echo
 echo "---{ message modification modules }---"
+echo "    mmnormalize module will be compiled:      $enable_mmnormalize"
 echo "    mmsnmptrapd module will be compiled:      $enable_mmsnmptrapd"
 echo
 echo "---{ strgen modules }---"

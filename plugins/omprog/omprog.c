@@ -6,24 +6,23 @@
  *
  * File begun on 2009-04-01 by RGerhards
  *
- * Copyright 2009 Rainer Gerhards and Adiscon GmbH.
+ * Copyright 2009-2012 Adiscon GmbH.
  *
  * This file is part of rsyslog.
  *
- * Rsyslog is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * Rsyslog is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with Rsyslog.  If not, see <http://www.gnu.org/licenses/>.
- *
- * A copy of the GPL can be found in the file "COPYING" in this distribution.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ * 
+ *       http://www.apache.org/licenses/LICENSE-2.0
+ *       -or-
+ *       see COPYING.ASL20 in the source distribution
+ * 
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 #include "config.h"
 #include "rsyslog.h"
@@ -59,8 +58,18 @@ typedef struct _instanceData {
 	int bIsRunning;		/* is binary currently running? 0-no, 1-yes */
 } instanceData;
 
+typedef struct configSettings_s {
+	uchar *szBinary;	/* name of binary to call */
+} configSettings_t;
+
+SCOPING_SUPPORT; /* must be set AFTER configSettings_t is defined */
+
+BEGINinitConfVars		/* (re)set config variables to default values */
+CODESTARTinitConfVars 
+	cs.szBinary = NULL;	/* name of binary to call */
+ENDinitConfVars
+
 /* config settings */
-static uchar *szBinary = NULL;	/* name of binary to call */
 
 BEGINcreateInstance
 CODESTARTcreateInstance
@@ -301,7 +310,13 @@ CODE_STD_STRING_REQUESTparseSelectorAct(1)
 	p += sizeof(":omprog:") - 1; /* eat indicator sequence  (-1 because of '\0'!) */
 	CHKiRet(createInstance(&pData));
 
-	CHKmalloc(pData->szBinary = (uchar*) strdup((char*)szBinary));
+	if(cs.szBinary == NULL) {
+		errmsg.LogError(0, RS_RET_CONF_RQRD_PARAM_MISSING,
+			"no binary to execute specified");
+		ABORT_FINALIZE(RS_RET_CONF_RQRD_PARAM_MISSING);
+	}
+
+	CHKmalloc(pData->szBinary = (uchar*) strdup((char*)cs.szBinary));
 	/* check if a non-standard template is to be applied */
 	if(*(p-1) == ';')
 		--p;
@@ -312,10 +327,8 @@ ENDparseSelectorAct
 
 BEGINmodExit
 CODESTARTmodExit
-	if(szBinary != NULL) {
-		free(szBinary);
-		szBinary = NULL;
-	}
+	free(cs.szBinary);
+	cs.szBinary = NULL;
 	CHKiRet(objRelease(errmsg, CORE_COMPONENT));
 finalize_it:
 ENDmodExit
@@ -333,22 +346,19 @@ ENDqueryEtryPt
 static rsRetVal resetConfigVariables(uchar __attribute__((unused)) *pp, void __attribute__((unused)) *pVal)
 {
 	DEFiRet;
-
-	if(szBinary != NULL) {
-		free(szBinary);
-		szBinary = NULL;
-	}
-
+	free(cs.szBinary);
+	cs.szBinary = NULL;
 	RETiRet;
 }
 
 
 BEGINmodInit()
 CODESTARTmodInit
+SCOPINGmodInit
 	*ipIFVersProvided = CURR_MOD_IF_VERSION; /* we only support the current interface specification */
 CODEmodInit_QueryRegCFSLineHdlr
 	CHKiRet(objUse(errmsg, CORE_COMPONENT));
-	CHKiRet(omsdRegCFSLineHdlr((uchar *)"actionomprogbinary", 0, eCmdHdlrGetWord, NULL, &szBinary, STD_LOADABLE_MODULE_ID));
+	CHKiRet(omsdRegCFSLineHdlr((uchar *)"actionomprogbinary", 0, eCmdHdlrGetWord, NULL, &cs.szBinary, STD_LOADABLE_MODULE_ID));
 	CHKiRet(omsdRegCFSLineHdlr((uchar *)"resetconfigvariables", 1, eCmdHdlrCustomHandler, resetConfigVariables, NULL, STD_LOADABLE_MODULE_ID));
 CODEmodInit_QueryRegCFSLineHdlr
 ENDmodInit
