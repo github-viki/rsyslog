@@ -1,8 +1,8 @@
-rsyslog (5.8.1-9) unstable; urgency=low
+rsyslog (6.2.2-1) unstable; urgency=low
 
-  * Include omprog in the .install file
+  * Merge upstream release
 
- -- Jason Cook <jason@fastly.com>  Tue, 05 Jun 2012 01:16:36 +0000
+ -- Jason Cook <jason@fastly.com>  Wed, 01 Aug 2012 19:55:36 +0000
 
 rsyslog (5.8.1-8) unstable; urgency=low
 

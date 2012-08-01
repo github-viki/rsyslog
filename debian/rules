@@ -16,6 +16,7 @@ override_dh_auto_configure:
 		--enable-omuxsock \
 		--enable-omruleset \
 		--enable-impstats \
+		--enable-imttcp \
 		--enable-imfile
 
 override_dh_auto_install:
